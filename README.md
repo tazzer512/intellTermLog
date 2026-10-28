@@ -1,0 +1,53 @@
+# Log Console – IntelliJ IDEA plugin
+
+A **Log Console** tool window: a bash session where you type or paste commands (e.g. `sh run-all.sh`
+that starts stubs + apps), with the output colored and filterable:
+
+- **Command box** at the bottom (drag the divider to resize it): Enter runs, Shift+Enter adds a line,
+  pasted multi-line text runs line by line, Tab completes, ↑/↓ history, Ctrl+C interrupts, Ctrl+L clears.
+  Commands typed with a leading space are not saved in the history (like bash's `ignorespace`).
+  It's one persistent shell per tab, so `cd`, `export` and aliases carry over. While a command runs,
+  what you type goes to that program's input.
+
+- **Red** error lines, **yellow** warning lines, everything else default (white in a dark theme).
+  Stack traces (`at …`, `Caused by:`, `... 12 more`) keep the color of the log line above them.
+  The level token appearing *first* in a line wins, so `INFO … got ERROR from stub` stays white.
+- **Live filter** on keyword or regex, case-sensitive or not, *include* or *exclude* matching lines;
+  matches are highlighted. Level toggles: Errors / Warnings / Debug (DEBUG, TRACE) / Other (INFO, rest).
+  Each toggle shows its count, e.g. *Errors (12)*, and has ▲/▼ buttons to jump to the previous/next
+  error, warning or debug line, which gets selected (wrapping around; a stack trace counts as part of its line).
+- Scroll-to-end toggle, soft-wrap, clear.
+- **Bookmarks**: right-click a line → *Add Bookmark* / *Add Bookmark with Note…* (or click the gutter,
+  F11 / Shift+F11). The **Bookmarks** box on the right lists them; click one to jump to it, double-click
+  to jump even when the filter hides it (the filter is cleared). Buttons: add at caret, remove, edit note,
+  previous/next, copy bookmarked lines, remove all. The bookmark icon in the toolbar shows/hides the box.
+- Multiple tabs (`+` in the tool window title); one tab per script.
+- **Stop** ends everything started from the tab but keeps the shell (and your `cd`/exports): the running
+  command, background jobs and apps a script left running, even when it ended without `wait` or an app
+  detached with `setsid` (each tab's shell gets a `LOG_CONSOLE_SESSION` variable that its processes inherit). SIGTERM first so Spring shutdown hooks run; anything alive after 10s gets SIGKILL.
+  **Kill shell** does the same including bash itself (SIGKILL after 5s) and opens a fresh shell.
+  Closing a tab kills too. Not reachable: processes owned by another daemon, e.g. apps run by the
+  Gradle daemon (`gradle bootRun` without `--no-daemon`) or `docker run -d` / `docker compose up -d`.
+- Right-click a `.sh` file → **Run 'run-all.sh' in Log Console** (project view, editor, editor tab).
+- Settings | Tools | Log Console: level regexes, colors, max lines per tab.
+
+## Build & install
+
+```bash
+./gradlew buildPlugin
+```
+
+Then in IntelliJ: *Settings → Plugins → ⚙ → Install Plugin from Disk…* →
+`build/distributions/log-console-1.0.0.zip`. Requires IntelliJ IDEA 2026.1 or newer.
+
+To try it in a sandbox IDE without touching your own: `./gradlew runIde`, then right-click
+`samples/demo.sh` → *Run 'demo.sh' in Log Console*.
+
+Run the tests with `./gradlew test`.
+
+## Tips for your scripts
+
+- End `run-all.sh` with `wait`, so the tab shows it as running until all apps have exited.
+- Prefix lines per app if you want to filter by app, e.g. `java -jar stub.jar 2>&1 | sed 's/^/[stub] /' &`,
+  then filter on `[stub]`.
+- ANSI color codes in the output are stripped; the plugin applies its own colors.

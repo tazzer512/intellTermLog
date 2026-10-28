@@ -1,0 +1,35 @@
+<idea-plugin>
+    <id>dev.logconsole</id>
+    <name>Log Console</name>
+    <vendor>Arjen van Haren</vendor>
+    <description><![CDATA[
+    Runs shell scripts (e.g. <code>sh run-all.sh</code> that starts stubs and apps) in a dedicated
+    <b>Log Console</b> tool window with:
+    <ul>
+      <li>Error lines in red, warning lines in yellow, everything else in the default color</li>
+      <li>Stack trace lines keep the color of the log line that produced them</li>
+      <li>Live filtering by keyword or regex (include or exclude), and by level</li>
+      <li>Jump to next / previous error, multiple tabs, clean stop of the whole process group</li>
+    </ul>
+    Patterns and colors are configurable in <i>Settings | Tools | Log Console</i>.
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow id="Log Console" anchor="bottom" icon="AllIcons.Debugger.Console"
+                    factoryClass="dev.logconsole.LogConsoleToolWindowFactory"/>
+        <applicationConfigurable parentId="tools" id="dev.logconsole.settings" displayName="Log Console"
+                                 instance="dev.logconsole.LogConsoleConfigurable"/>
+    </extensions>
+
+    <actions>
+        <action id="LogConsole.RunScript" class="dev.logconsole.RunInLogConsoleAction"
+                text="Run in Log Console" description="Run this script in the Log Console tool window"
+                icon="AllIcons.Actions.Execute">
+            <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+            <add-to-group group-id="EditorTabPopupMenu" anchor="last"/>
+        </action>
+    </actions>
+</idea-plugin>
