@@ -7,7 +7,9 @@ import org.junit.jupiter.api.condition.OS;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -100,11 +102,57 @@ class ShellProcessesTest {
     }
 
     @Test
-    void describe() {
-        ProcessHandle self = ProcessHandle.current();
-        assertTrue(ShellProcesses.describe(List.of(self)).startsWith("1 process ("));
-        assertTrue(ShellProcesses.describe(List.of(self, self)).startsWith("2 processes ("));
-        assertTrue(ShellProcesses.describe(java.util.Collections.nCopies(9, self)).endsWith(", …)"));
+    void describeNamesTheCommandsOfAtMostEightProcesses() {
+        ProcessHandle self = ProcessHandle.current(); // this test JVM: ".../bin/java"
+        assertEquals("1 process (java)", ShellProcesses.describe(List.of(self)));
+        assertEquals("2 processes (java, java)", ShellProcesses.describe(List.of(self, self)));
+        assertEquals("9 processes (" + String.join(", ", Collections.nCopies(8, "java")) + ", …)",
+                ShellProcesses.describe(Collections.nCopies(9, self)));
+    }
+
+    /** Like pkill -f: "java" anywhere in the command line counts, also in an argument. */
+    @Test
+    @EnabledOnOs(OS.LINUX)
+    void javaProcessesMatchTheWholeCommandLine() throws Exception {
+        Process javaArgument = new ProcessBuilder("bash", "-c", "sleep 407; : java-marker").start();
+        Process other = new ProcessBuilder("sleep", "408").start();
+        started.add(javaArgument.toHandle());
+        started.add(other.toHandle());
+
+        List<Long> pids = ShellProcesses.javaProcesses().stream().map(ProcessHandle::pid).toList();
+        assertTrue(pids.contains(javaArgument.pid()));
+        assertFalse(pids.contains(other.pid()));
+    }
+
+    /** Killing the JVM the plugin runs in (or the Gradle daemon a sandbox IDE runs under) would end the IDE. */
+    @Test
+    @EnabledOnOs(OS.LINUX)
+    void javaProcessesNeverIncludeThisJvmOrItsAncestors() {
+        List<Long> pids = ShellProcesses.javaProcesses().stream().map(ProcessHandle::pid).toList();
+        for (ProcessHandle p = ProcessHandle.current(); p != null; p = p.parent().orElse(null)) {
+            assertFalse(pids.contains(p.pid()), "includes " + p.pid() + " " + p.info().command().orElse("?"));
+        }
+    }
+
+    @Test
+    @EnabledOnOs(OS.LINUX)
+    void hangUpEndsAnInteractiveBashThatIgnoresSigterm() throws Exception {
+        Process bash = new ProcessBuilder("bash", "-i").redirectErrorStream(true).start(); // stdin stays open
+        started.add(bash.toHandle());
+        Thread.sleep(300);
+        bash.toHandle().destroy();
+        Thread.sleep(300);
+        assertTrue(bash.isAlive(), "an interactive bash ignores SIGTERM");
+        ShellProcesses.hangUp(bash.toHandle());
+        assertTrue(bash.waitFor(2, TimeUnit.SECONDS));
+    }
+
+    @Test
+    @EnabledOnOs(OS.LINUX)
+    void commandLineHasAllArguments() throws Exception {
+        Process sleep = new ProcessBuilder("sleep", "409").start();
+        started.add(sleep.toHandle());
+        assertEquals("sleep 409", ShellProcesses.commandLine(sleep.toHandle()));
     }
 
     private static List<ProcessHandle> waitForSleeps(ProcessHandle shell, String tag, int count) throws InterruptedException {

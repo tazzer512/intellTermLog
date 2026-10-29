@@ -104,9 +104,11 @@ import javax.swing.event.ListDataEvent;
 import javax.swing.event.ListDataListener;
 import javax.swing.text.BadLocationException;
 import javax.swing.text.DefaultEditorKit;
+import java.awt.AWTEvent;
 import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Dimension;
+import java.awt.EventQueue;
 import java.awt.FlowLayout;
 import java.awt.Font;
 import java.awt.event.ActionEvent;
@@ -171,18 +173,18 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
     private Content tab;
 
     final SearchTextField filterField = new SearchTextField("logConsole.filterHistory");
-    private final JBCheckBox regexBox = new JBCheckBox("Regex");
-    private final JBCheckBox caseBox = new JBCheckBox("Match case");
+    final JBCheckBox regexBox = new JBCheckBox("Regex");
+    final JBCheckBox caseBox = new JBCheckBox("Match case");
     final JBCheckBox excludeBox = new JBCheckBox("Exclude");
     final JBCheckBox errorBox = new JBCheckBox("Errors", true);
-    private final JBCheckBox warnBox = new JBCheckBox("Warnings", true);
-    private final JBCheckBox debugBox = new JBCheckBox("Debug", true);
-    private final JBCheckBox otherBox = new JBCheckBox("Other", true);
-    private final JBLabel statusLabel = new JBLabel();
+    final JBCheckBox warnBox = new JBCheckBox("Warnings", true);
+    final JBCheckBox debugBox = new JBCheckBox("Debug", true);
+    final JBCheckBox otherBox = new JBCheckBox("Other", true);
+    final JBLabel statusLabel = new JBLabel();
     final JBLabel matchLabel = new JBLabel();
     final JBLabel lineCountLabel = new JBLabel();
     private final JBLabel promptLabel = new JBLabel();
-    private final JBTextArea input = new JBTextArea(3, 80);
+    final JBTextArea input = new JBTextArea(3, 80);
     private final Timer filterTimer = new Timer(250, e -> applyFilter());
 
     private final DocumentEx document = new DocumentImpl("", true);
@@ -215,6 +217,8 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
     private int currentMatch;
     /** Set while several filter controls change at once, so they rebuild the output only once. */
     private boolean bulkFilterChange;
+    /** The level checkboxes' states before a Ctrl+click soloed one level (error, warn, debug, other); null when none. */
+    private boolean[] levelsBeforeSolo;
     private int errorCount;
     /** The level the last level jump went to, and the number of its entry (shown as "Errors (3/12)"); null when none. */
     private LogLevel navLevel;
@@ -228,8 +232,8 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
     private int outputShown;
 
     // bookmarks: the bookmarked LogLines, in output order; a line keeps its bookmark while filtered out
-    private final CollectionListModel<LogLine> bookmarks = new CollectionListModel<>();
-    private final JBList<LogLine> bookmarkList = new JBList<>(bookmarks);
+    final CollectionListModel<LogLine> bookmarks = new CollectionListModel<>();
+    final JBList<LogLine> bookmarkList = new JBList<>(bookmarks);
     private final JBLabel bookmarkTitle = new JBLabel();
     private JComponent bookmarkPanel;
     /** Highlighters of the bookmarked lines currently in the document. */
@@ -243,15 +247,15 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
 
     // shell session
     private final ExecutorService inputWriter = SequentialTaskExecutor.createSequentialApplicationPoolExecutor("Log Console input");
-    private volatile KillableProcessHandler shell;
+    volatile KillableProcessHandler shell;
     /** Value of {@link ShellProcesses#TAG_VARIABLE} in the current shell's environment. */
     private volatile String shellTag;
-    private boolean shellReady;
+    boolean shellReady;
     private long shellStartedAt;
     private boolean restartShellOnExit;
     private final List<String> queuedInput = new ArrayList<>();
-    private String cwd;
-    private boolean busy;
+    String cwd;
+    boolean busy;
     private String lastCommand;
     private String commandAfterIdle;
     private volatile boolean disposed;
@@ -324,13 +328,28 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         for (JBCheckBox box : List.of(errorBox, warnBox, debugBox, otherBox)) {
             box.addItemListener(e -> {
                 if (bulkFilterChange) return;
+                if (isCtrlClick(EventQueue.getCurrentEvent())) {
+                    // The click already toggled the box; undo that and solo the level instead.
+                    bulkFilterChange = true;
+                    try {
+                        box.setSelected(!box.isSelected());
+                    } finally {
+                        bulkFilterChange = false;
+                    }
+                    toggleSoloLevel(box);
+                    return;
+                }
+                levelsBeforeSolo = null; // a manual change ends the solo
                 rebuild();
                 updateStatus();
             });
         }
         regexBox.setToolTipText("Interpret the filter as a Java regular expression");
-        debugBox.setToolTipText("DEBUG / TRACE lines (and FINE…FINEST); patterns in Settings | Tools | Log Console");
-        otherBox.setToolTipText("INFO and all lines without a recognized level");
+        String solo = "<br>Ctrl+click: show only this level; Ctrl+click again to restore the previous levels";
+        errorBox.setToolTipText("<html>Error lines and their stack traces" + solo);
+        warnBox.setToolTipText("<html>Warning lines" + solo);
+        debugBox.setToolTipText("<html>DEBUG / TRACE lines (and FINE…FINEST); patterns in Settings | Tools | Log Console" + solo);
+        otherBox.setToolTipText("<html>INFO and all lines without a recognized level" + solo);
         excludeBox.setToolTipText("Hide matching lines instead of showing only matching lines");
     }
 
@@ -486,13 +505,27 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         DefaultActionGroup group = new DefaultActionGroup();
         group.add(action("Rerun Last Command", "Stop the running command if needed and run the last command again",
                 AllIcons.Actions.Restart, () -> runCommand(lastCommand), () -> lastCommand != null));
-        group.add(action("Interrupt (Ctrl+C)", "Send Ctrl+C to the running command", AllIcons.Actions.Cancel,
-                this::interrupt, () -> shellReady));
         group.add(action("Stop All Processes (Keep Shell)",
                 "SIGTERM the running command and everything started from this tab (also background apps); SIGKILL after "
                         + STOP_TIMEOUT_SECONDS + "s; the shell keeps running", AllIcons.Actions.Suspend, this::stopAll, () -> shell != null));
-        group.add(action("Kill Shell and All Processes", "Kill the shell and everything started from it, then open a fresh shell",
-                AllIcons.Debugger.KillProcess, () -> killShell(true), () -> shell != null));
+        group.add(new DumbAwareAction("Kill Shell and All Processes",
+                "Kill the shell and everything started from it, then open a fresh shell. Ctrl+click: also SIGTERM every "
+                        + "Java process (like pkill -f java), except this IDE", AllIcons.Debugger.KillProcess) {
+            @Override
+            public void actionPerformed(@NotNull AnActionEvent e) {
+                kill(isCtrlClick(e.getInputEvent()));
+            }
+
+            @Override
+            public void update(@NotNull AnActionEvent e) {
+                e.getPresentation().setEnabled(shell != null);
+            }
+
+            @Override
+            public @NotNull ActionUpdateThread getActionUpdateThread() {
+                return ActionUpdateThread.EDT;
+            }
+        });
         group.addSeparator();
         group.add(action("Scroll Up", "Scroll up one page and pause scrolling", AllIcons.Actions.PreviousOccurence,
                 () -> scrollPage(false), () -> !visibleLines.isEmpty()));
@@ -663,7 +696,7 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         }
     }
 
-    private void submitInput() {
+    void submitInput() {
         String text = input.getText();
         input.setText("");
         historyIndex = -1;
@@ -818,7 +851,7 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         updateStatus();
     }
 
-    private void interrupt() {
+    void interrupt() {
         if (shellReady) writeRaw(shell, "\u0003");
     }
 
@@ -826,7 +859,7 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
      * Stops everything started from this tab but keeps the shell: the running command, background jobs and
      * apps a script left running. SIGTERM first so shutdown hooks run, SIGKILL for whatever is left after a timeout.
      */
-    private void stopAll() {
+    void stopAll() {
         KillableProcessHandler handler = shell;
         if (handler == null) return;
         ProcessHandle shellProcess = processHandle(handler);
@@ -849,6 +882,41 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         });
     }
 
+    /**
+     * Ctrl+click on Kill: SIGTERM to every Java process like {@code pkill -f java}, after a confirmation since that
+     * also hits apps outside this tab (other IDEs and Gradle daemons, too). Returns false when cancelled.
+     */
+    boolean killJavaProcesses() {
+        List<ProcessHandle> processes = javaProcesses.get();
+        if (processes.isEmpty()) {
+            addSystemLine("No Java processes running (this IDE excluded).");
+            return true;
+        }
+        if (!confirmKillJava.test(processes)) return false;
+        addSystemLine("Stopping " + ShellProcesses.describe(processes) + " (SIGTERM, like pkill -f java)…");
+        processes.forEach(ProcessHandle::destroy);
+        return true;
+    }
+
+    /** The processes {@link #killJavaProcesses()} signals; tests replace it so they never touch real Java apps. */
+    java.util.function.Supplier<List<ProcessHandle>> javaProcesses = ShellProcesses::javaProcesses;
+
+    /** Asks before {@link #killJavaProcesses()} signals anything; tests replace it. */
+    java.util.function.Predicate<List<ProcessHandle>> confirmKillJava = this::askToKillJava;
+
+    private boolean askToKillJava(List<ProcessHandle> processes) {
+        return Messages.showYesNoDialog(project, "Send SIGTERM to " + ShellProcesses.describe(processes)
+                        + "?\nThis includes Java apps not started from this tab, such as other IDEs and Gradle daemons "
+                        + "(this IDE is excluded).",
+                "Kill All Java Processes", "Kill", "Cancel", Messages.getWarningIcon()) == Messages.YES;
+    }
+
+    /** The Kill button; {@code alsoJava} (Ctrl+click) first stops every Java process, unless that is cancelled. */
+    void kill(boolean alsoJava) {
+        if (alsoJava && !killJavaProcesses()) return;
+        killShell(true);
+    }
+
     /** Kills the whole session: the shell, the running command and anything left running in the background. */
     private void killShell(boolean restart) {
         KillableProcessHandler handler = shell;
@@ -864,8 +932,10 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         String tag = shellTag;
         AppExecutorUtil.getAppExecutorService().execute(() -> {
             List<ProcessHandle> processes = new ArrayList<>(ShellProcesses.startedFrom(shellProcess, tag));
-            processes.add(shellProcess);
             processes.forEach(ProcessHandle::destroy);
+            // An interactive bash ignores SIGTERM, so it would only go at the SIGKILL below; SIGHUP ends it now.
+            ShellProcesses.hangUp(shellProcess);
+            processes.add(shellProcess);
             AppExecutorUtil.getAppScheduledExecutorService().schedule(() -> {
                 // processes started while we were waiting are included too
                 processes.addAll(ShellProcesses.startedFrom(shellProcess, tag));
@@ -923,7 +993,7 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
     private record Completion(int id, String text, int caret, int wordStart, Path out) {
     }
 
-    private void complete() {
+    void complete() {
         String text = input.getText();
         int caret = input.getCaretPosition();
         int lineStart = text.lastIndexOf('\n', caret - 1) + 1;
@@ -1022,7 +1092,7 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         PropertiesComponent.getInstance().setList(HISTORY_KEY, history);
     }
 
-    private void historyMove(int delta) {
+    void historyMove(int delta) {
         if (history.isEmpty()) return;
         if (historyIndex == -1) {
             if (delta > 0) return;
@@ -1252,7 +1322,7 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         updateStatus();
     }
 
-    private void clear() {
+    void clear() {
         lines.clear();
         visibleLines.clear();
         previousLevel = null;
@@ -1433,9 +1503,17 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
             }
         });
         // A click in the gutter toggles the bookmark of that line, as in the IDE's editors.
+        // Ctrl+double-click in the text selects the whole line instead of the word under the mouse.
         editor.addEditorMouseListener(new EditorMouseListener() {
             @Override
             public void mouseClicked(@NotNull EditorMouseEvent event) {
+                MouseEvent mouse = event.getMouseEvent();
+                if (event.getArea() == EditorMouseEventArea.EDITING_AREA && mouse.getButton() == MouseEvent.BUTTON1
+                        && mouse.getClickCount() == 2 && isCtrlClick(mouse)) {
+                    selectLine(event.getLogicalPosition().line);
+                    event.consume();
+                    return;
+                }
                 if (event.getArea() != EditorMouseEventArea.LINE_MARKERS_AREA
                         || event.getMouseEvent().getButton() != MouseEvent.BUTTON1) return;
                 LogLine line = lineAt(event.getLogicalPosition().line);
@@ -1447,7 +1525,16 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         }, this);
     }
 
-    private JComponent createBookmarkPanel() {
+    /** Selects document line {@code line} without its line break (the word selection of the double click is replaced). */
+    void selectLine(int line) {
+        if (line >= document.getLineCount()) return;
+        int start = document.getLineStartOffset(line);
+        int end = document.getLineEndOffset(line);
+        editor.getSelectionModel().setSelection(start, end);
+        editor.getCaretModel().moveToOffset(end);
+    }
+
+        private JComponent createBookmarkPanel() {
         bookmarkList.setCellRenderer(new ColoredListCellRenderer<>() {
             @Override
             protected void customizeCellRenderer(@NotNull JList<? extends LogLine> list, LogLine line, int index,
@@ -1564,12 +1651,12 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         return Math.min(editor.getCaretModel().getLogicalPosition().line, visibleLines.size() - 1);
     }
 
-    private void toggleBookmark(LogLine line) {
+    void toggleBookmark(LogLine line) {
         if (line.bookmarkNote == null) addBookmark(line, "");
         else removeBookmark(line);
     }
 
-    private void addBookmark(LogLine line, String note) {
+    void addBookmark(LogLine line, String note) {
         line.bookmarkNote = note;
         int index = 0;
         while (index < bookmarks.getSize() && bookmarks.getElementAt(index).number < line.number) index++;
@@ -1579,14 +1666,14 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         bookmarkPanel.setVisible(true);
     }
 
-    private void removeBookmark(LogLine line) {
+    void removeBookmark(LogLine line) {
         line.bookmarkNote = null;
         bookmarks.remove(line);
         RangeHighlighter highlighter = bookmarkHighlighters.remove(line);
         if (highlighter != null) editor.getMarkupModel().removeHighlighter(highlighter);
     }
 
-    private void removeAllBookmarks() {
+    void removeAllBookmarks() {
         List.copyOf(bookmarks.getItems()).forEach(this::removeBookmark);
     }
 
@@ -1609,7 +1696,7 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
     }
 
     /** Scrolls to a bookmarked line; with {@code reveal}, clears the filter first if it hides the line. */
-    private void goTo(LogLine line, boolean reveal) {
+    void goTo(LogLine line, boolean reveal) {
         navLevel = null;
         int docLine = visibleLines.indexOf(line);
         if (docLine < 0) {
@@ -1682,7 +1769,7 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
     }
 
     /** Next/previous visible bookmark from the caret, wrapping around. */
-    private void jumpToBookmark(boolean forward) {
+    void jumpToBookmark(boolean forward) {
         int size = visibleLines.size();
         if (size == 0) return;
         int current = caretDocLine();
@@ -1697,7 +1784,7 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         }
     }
 
-    private void copyBookmarks() {
+    void copyBookmarks() {
         List<LogLine> selected = bookmarkList.getSelectedValuesList();
         List<LogLine> toCopy = selected.isEmpty() ? bookmarks.getItems() : selected;
         StringBuilder text = new StringBuilder();
@@ -1708,8 +1795,43 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         CopyPasteManager.getInstance().setContents(new StringSelection(text.toString()));
     }
 
+    static boolean isCtrlClick(AWTEvent event) {
+        // Cmd on macOS too, where Ctrl+click usually means right-click.
+        return event instanceof InputEvent input
+                && (input.getModifiersEx() & (InputEvent.CTRL_DOWN_MASK | InputEvent.META_DOWN_MASK)) != 0;
+    }
+
+    /**
+     * Ctrl+click on a level checkbox: show only that level. Ctrl+clicking the soloed level again restores the levels
+     * shown before the first solo (soloing another level in between keeps them).
+     */
+    void toggleSoloLevel(JBCheckBox solo) {
+        List<JBCheckBox> boxes = List.of(errorBox, warnBox, debugBox, otherBox);
+        boolean soloed = boxes.stream().allMatch(box -> box.isSelected() == (box == solo));
+        boolean[] target = new boolean[boxes.size()];
+        if (soloed && levelsBeforeSolo != null) {
+            target = levelsBeforeSolo;
+            levelsBeforeSolo = null;
+        } else {
+            if (levelsBeforeSolo == null) {
+                levelsBeforeSolo = new boolean[boxes.size()];
+                for (int i = 0; i < boxes.size(); i++) levelsBeforeSolo[i] = boxes.get(i).isSelected();
+            }
+            target[boxes.indexOf(solo)] = true;
+        }
+        bulkFilterChange = true;
+        try {
+            for (int i = 0; i < boxes.size(); i++) boxes.get(i).setSelected(target[i]);
+        } finally {
+            bulkFilterChange = false;
+        }
+        rebuild();
+        updateStatus();
+    }
+
     /** Clears the text filter and shows all levels, rebuilding the output once. */
     private void showAllLines() {
+        levelsBeforeSolo = null;
         bulkFilterChange = true;
         try {
             filterField.setText("");

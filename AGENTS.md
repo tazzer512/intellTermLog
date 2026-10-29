@@ -21,7 +21,8 @@ and kills it. The sandbox log is `.intellijPlatform/sandbox/log-console/IU-*/log
 for `Loaded custom plugins: Log Console` and for ` ERROR ` lines. The sandbox runs on Wayland, so it can't be
 screenshotted. Test UI behavior in `LogConsolePanelTest` instead: it creates a real panel and editor (with a real
 shell), feeds lines with `enqueue` + `flush`, and calls the same methods the toolbar buttons call. Fields and
-methods it needs are package-private.
+methods it needs are package-private. For real shell commands use its `run(command)` / `waitForIdle()` helpers: the
+prompt marker can arrive before the 50 ms output flush, so they flush after the shell is idle.
 
 ## Layout (`src/main/java/dev/logconsole`)
 
@@ -48,8 +49,12 @@ methods it needs are package-private.
   The helper script and result files live in `PathManager.getSystemPath()/log-console`, never in `/tmp`
   (the shell `source`s the script).
 - Each shell gets `LOG_CONSOLE_SESSION=<uuid>` in its environment. Stop = SIGTERM to everything from
-  `ShellProcesses.startedFrom` (shell excluded), SIGKILL after 10s; Kill also includes the shell (5s).
+  `ShellProcesses.startedFrom` (shell excluded), SIGKILL after 10s; Kill also includes the shell (5s). The shell
+  itself gets SIGHUP (`ShellProcesses.hangUp`): an interactive bash ignores SIGTERM.
   pty4j's `Process` does not support `toHandle()`; use `ProcessHandle.of(process.pid())`.
+- Ctrl+click on Kill also SIGTERMs `ShellProcesses.javaProcesses()` (like `pkill -f java`, minus this JVM and its
+  ancestors, e.g. the Gradle daemon under `runIde`), after `confirmKillJava`. Tests replace both `javaProcesses`
+  and `confirmKillJava`; never let a test confirm against the real list, it would SIGTERM every Java app on the machine.
 - Output is queued off-EDT (`pending`, capped at `MAX_PENDING`) and flushed in 50 ms batches on the EDT.
   `visibleLines.get(i)` is document line `i`. Bookmarks reference `LogLine` objects (identity), not line numbers.
 - Level highlighters are coalesced per run of same-level lines; a filter/level change rebuilds the document.

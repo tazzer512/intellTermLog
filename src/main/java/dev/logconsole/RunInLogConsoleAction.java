@@ -32,7 +32,7 @@ public final class RunInLogConsoleAction extends DumbAwareAction {
         Project project = e.getProject();
         VirtualFile file = e.getData(CommonDataKeys.VIRTUAL_FILE);
         if (project == null || file == null || file.getParent() == null) return;
-        String command = "cd " + quote(file.getParent().getPath()) + " && " + commandFor(file);
+        String command = "cd " + quote(file.getParent().getPath()) + " && " + commandFor(file.getName());
         LogConsoleToolWindowFactory.run(project, command);
     }
 
@@ -41,9 +41,9 @@ public final class RunInLogConsoleAction extends DumbAwareAction {
         return !file.isDirectory() && file.isInLocalFileSystem() && ext != null && SCRIPT_EXTENSIONS.contains(ext.toLowerCase());
     }
 
-    private static String commandFor(VirtualFile file) {
-        String name = file.getName();
-        String ext = file.getExtension() == null ? "" : file.getExtension().toLowerCase();
+    /** E.g. "bash 'my script.sh'"; zsh and ksh scripts run with their own shell. */
+    static String commandFor(String name) {
+        String ext = name.lastIndexOf('.') < 0 ? "" : name.substring(name.lastIndexOf('.') + 1).toLowerCase();
         String shell = ext.equals("zsh") ? "zsh" : ext.equals("ksh") ? "ksh" : "bash";
         return shell + " " + quote(name);
     }

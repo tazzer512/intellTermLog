@@ -18,7 +18,8 @@ Stop/Kill find processes via `/proc` (Linux) — on Windows the shell does not s
   matches are highlighted. Level toggles: Errors / Warnings / Debug (DEBUG, TRACE) / Other (INFO, rest).
   Each toggle shows its count, e.g. *Errors (12)*, and has ▲/▼ buttons to jump to the previous/next
   error, warning or debug entry, which gets selected and marked with a yellow box, wrapping around. While
-  stepping, the toggle shows where you are, e.g. *Errors (3/12)*. Counts and jumps are per entry: a stack trace
+  stepping, the toggle shows where you are, e.g. *Errors (3/12)*. Ctrl+click (⌘+click) a toggle to show only
+  that level; Ctrl+click it again to restore the levels you had. Counts and jumps are per entry: a stack trace
   (and an exception printed right below its ERROR line) belongs to its entry, and back-to-back errors are
   separate entries. A jump pauses scrolling. Keyboard: F2 / Shift+F2 for next/previous error (your keymap's
   *Next/Previous Highlighted Error*) while the focus is in the tab.
@@ -27,6 +28,7 @@ Stop/Kill find processes via `/proc` (Linux) — on Windows the shell does not s
   Find bar. Enter / Shift+Enter in the filter field go to the next / previous match; F3 / Shift+F3 anywhere in the tab.
 - **Clickable stack traces**: `at com.foo.Bar.baz(Bar.java:42)` links to the source, like in the Run console
   (the same console filters; links to classes in the open project).
+- Ctrl+double-click (⌘+double-click) a line to select all of it rather than one word.
 - The ▲/▼ arrows in the left toolbar scroll up/down one page (and pause scrolling).
 - **Pause Scrolling** toggle keeps the view still while output arrives; *Scroll to the Top* shows the first
   line (and pauses), *Scroll to the End* shows the last line and follows new output again. Soft-wrap, clear.
@@ -39,7 +41,10 @@ Stop/Kill find processes via `/proc` (Linux) — on Windows the shell does not s
 - **Stop** ends everything started from the tab but keeps the shell (and your `cd`/exports): the running
   command, background jobs and apps a script left running, even when it ended without `wait` or an app
   detached with `setsid` (each tab's shell gets a `LOG_CONSOLE_SESSION` variable that its processes inherit). SIGTERM first so Spring shutdown hooks run; anything alive after 10s gets SIGKILL.
-  **Kill shell** does the same including bash itself (SIGKILL after 5s) and opens a fresh shell.
+  **Kill shell** does the same and ends bash itself with SIGHUP (anything still alive after 5s gets SIGKILL), then
+  opens a fresh shell.
+  Ctrl+click (⌘+click) *Kill shell* to also SIGTERM every Java process, like `pkill -f java` (after a confirmation;
+  the IDE itself and the processes it runs under are spared). Ctrl+C in the command box interrupts the running command.
   Closing a tab kills too. Not reachable: processes owned by another daemon, e.g. apps run by the
   Gradle daemon (`gradle bootRun` without `--no-daemon`) or `docker run -d` / `docker compose up -d`.
 - Right-click a `.sh` file → **Run 'run-all.sh' in Log Console** (project view, editor, editor tab).
