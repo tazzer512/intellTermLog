@@ -43,7 +43,7 @@ prompt marker can arrive before the 50 ms output flush, so they flush after the 
 | `LogConsolePanel` | One tab: UI, bash session lifecycle, output pipeline, filter, completion, bookmarks, history. EDT-only state unless `volatile`. |
 | `ShellOutputParser` | Splits PTY output into lines, strips ANSI, handles `\r` overwrites, recognizes the prompt/completion markers. Pure, tested. |
 | `ShellText` | Quoting/escaping, word boundaries, file completion, tab titles. Pure, tested. |
-| `ShellProcesses` | Finds processes started from a shell (tree + session + env tag via `/proc`) for Stop/Kill, this user's Java processes for Ctrl+click Kill, and sends SIGHUP. Tested. |
+| `ShellProcesses` | Finds processes started from a shell (tree + session + env tag via `/proc`) for Rerun/Kill, this user's Java processes for the Java button and Ctrl+click Kill, and sends SIGHUP. Tested. |
 | `LogLine` / `LogLevel` | One line (text, kind output/command/system, level, `entryStart`, number, bookmark note; mutable fields EDT-only) and its level: ERROR/WARN/DEBUG/OTHER, plus COMMAND/SYSTEM, which are always shown. |
 | `LogClassifier` | Level of a line: the earliest-matching pattern wins; stack-trace continuation lines inherit. `continuesEntry` decides `LogLine.entryStart`, which the level counters and jumps use. Tested. |
 | `LogConsoleSettings` / `LogConsoleConfigurable` | App-level settings (patterns, colors, max lines), Settings \| Tools \| Log Console. |
@@ -63,13 +63,17 @@ prompt marker can arrive before the 50 ms output flush, so they flush after the 
   shell and reads the file when the marker arrives; while busy it falls back to `ShellText.fileCompletions`.
   The helper script and result files live in `PathManager.getSystemPath()/log-console`, never in `/tmp`
   (the shell `source`s the script).
-- Each shell gets `LOG_CONSOLE_SESSION=<uuid>` in its environment. Stop = SIGTERM to everything from
+- Each shell gets `LOG_CONSOLE_SESSION=<uuid>` in its environment. Stop (`stopAll`, used by Rerun) = SIGTERM to everything from
   `ShellProcesses.startedFrom` (shell excluded), SIGKILL after 10s; Kill also includes the shell (5s). The shell
   itself gets SIGHUP (`ShellProcesses.hangUp`): an interactive bash ignores SIGTERM.
   pty4j's `Process` does not support `toHandle()`; use `ProcessHandle.of(process.pid())`.
 - Ctrl+click on Kill also SIGTERMs `ShellProcesses.javaProcesses()` (like `pkill -f java`: this user's processes only, minus this JVM and its
   ancestors, e.g. the Gradle daemon under `runIde`), after `confirmKillJava`. Tests replace both `javaProcesses`
   and `confirmKillJava`; never let a test confirm against the real list, it would SIGTERM every Java app you run.
+  The **Java: n** toolbar button (no Stop button any more; `stopAll` still runs before Rerun) shows
+  `javaProcessCount`, rescanned off the EDT every 3s while the tab is shown (`refreshJavaCount`), and opens
+  `JavaProcessesDialog` (pid + command line); its Kill All Now (`killJavaNow`) sends SIGKILL. Close is the
+  default button so Enter never kills. Tests set `javaProcesses` for these too.
 - Output is queued off-EDT (`pending`, capped at `MAX_PENDING`) and flushed in 50 ms batches on the EDT.
   `visibleLines.get(i)` is document line `i`. Bookmarks reference `LogLine` objects (identity), not line numbers.
 - Level highlighters are coalesced per run of same-level lines; a filter/level change rebuilds the document.

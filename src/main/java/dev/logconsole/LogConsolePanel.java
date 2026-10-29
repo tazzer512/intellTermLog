@@ -24,6 +24,7 @@ import com.intellij.openapi.actionSystem.AnActionEvent;
 import com.intellij.openapi.actionSystem.CustomShortcutSet;
 import com.intellij.openapi.actionSystem.DefaultActionGroup;
 import com.intellij.openapi.actionSystem.IdeActions;
+import com.intellij.openapi.actionSystem.ex.ActionUtil;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ModalityState;
 import com.intellij.openapi.application.PathManager;
@@ -61,6 +62,7 @@ import com.intellij.openapi.ui.popup.JBPopup;
 import com.intellij.openapi.ui.popup.JBPopupFactory;
 import com.intellij.openapi.util.io.FileUtil;
 import com.intellij.openapi.ide.CopyPasteManager;
+import com.intellij.openapi.ui.DialogWrapper;
 import com.intellij.openapi.ui.Messages;
 import com.intellij.openapi.ui.SimpleToolWindowPanel;
 import com.intellij.openapi.util.Key;
@@ -82,6 +84,7 @@ import it.unimi.dsi.fastutil.ints.IntArrayList;
 import com.intellij.ui.components.JBList;
 import com.intellij.ui.components.JBScrollPane;
 import com.intellij.ui.components.JBTextArea;
+import com.intellij.ui.table.JBTable;
 import com.intellij.ui.content.Content;
 import com.intellij.util.concurrency.AppExecutorUtil;
 import com.intellij.util.concurrency.SequentialTaskExecutor;
@@ -103,6 +106,8 @@ import javax.swing.event.DocumentEvent;
 import javax.swing.event.ListDataEvent;
 import javax.swing.event.ListDataListener;
 import javax.swing.text.BadLocationException;
+import javax.swing.table.DefaultTableCellRenderer;
+import javax.swing.table.DefaultTableModel;
 import javax.swing.text.DefaultEditorKit;
 import java.awt.AWTEvent;
 import java.awt.BorderLayout;
@@ -166,6 +171,7 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
     private static final int HISTORY_SIZE = 200;
     private static final int STOP_TIMEOUT_SECONDS = 10;
     private static final int KILL_TIMEOUT_SECONDS = 5;
+    private static final int JAVA_COUNT_REFRESH_SECONDS = 3;
     private static final String SHOW_BOOKMARKS_KEY = "logConsole.showBookmarks";
 
     private final Project project;
@@ -303,6 +309,10 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         updatePrompt();
         updateStatus();
         startShell();
+        javaCountRefresh = AppExecutorUtil.getAppScheduledExecutorService().scheduleWithFixedDelay(
+                () -> {
+                    if (isShowing()) refreshJavaCount();
+                }, 0, JAVA_COUNT_REFRESH_SECONDS, TimeUnit.SECONDS);
     }
 
     // ---------------------------------------------------------------- UI
@@ -509,9 +519,26 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         DefaultActionGroup group = new DefaultActionGroup();
         group.add(action("Rerun Last Command", "Stop the running command if needed and run the last command again",
                 AllIcons.Actions.Restart, () -> runCommand(lastCommand), () -> lastCommand != null));
-        group.add(action("Stop All Processes (Keep Shell)",
-                "SIGTERM the running command and everything started from this tab (also background apps); SIGKILL after "
-                        + STOP_TIMEOUT_SECONDS + "s; the shell keeps running", AllIcons.Actions.Suspend, this::stopAll, () -> shell != null));
+        group.add(new DumbAwareAction("Java Processes",
+                "Your running Java processes (this IDE excluded): click to list them, with their pids, or kill them all",
+                AllIcons.FileTypes.Java) {
+            @Override
+            public void actionPerformed(@NotNull AnActionEvent e) {
+                showJavaProcesses();
+            }
+
+            @Override
+            public void update(@NotNull AnActionEvent e) {
+                int count = javaProcessCount;
+                e.getPresentation().putClientProperty(ActionUtil.SHOW_TEXT_IN_TOOLBAR, true);
+                e.getPresentation().setText(count < 0 ? "Java" : "Java: " + count);
+            }
+
+            @Override
+            public @NotNull ActionUpdateThread getActionUpdateThread() {
+                return ActionUpdateThread.EDT;
+            }
+        });
         group.add(new DumbAwareAction("Kill Shell and All Processes",
                 "Kill the shell and everything started from it, then open a fresh shell. Ctrl+click: also SIGTERM all your "
                         + "Java processes (like pkill -f java), except this IDE", AllIcons.Debugger.KillProcess) {
@@ -957,6 +984,94 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
                 if (!disposed && killJavaProcesses(processes)) killShell(true);
             }, ModalityState.defaultModalityState());
         });
+    }
+
+    /** The Java Processes button's count: -1 until the first scan. Written by {@link #refreshJavaCount}. */
+    volatile int javaProcessCount = -1;
+    private java.util.concurrent.ScheduledFuture<?> javaCountRefresh;
+
+    /** Scanning reads every process's command line, so it runs in the background (every few seconds while shown). */
+    void refreshJavaCount() {
+        if (disposed) return;
+        javaProcessCount = javaProcesses.get().size();
+    }
+
+    /** The Java Processes button: lists them (read off the EDT) in a dialog that can kill them all. */
+    void showJavaProcesses() {
+        java.util.function.Supplier<List<ProcessHandle>> source = javaProcesses;
+        AppExecutorUtil.getAppExecutorService().execute(() -> {
+            List<ProcessHandle> processes = source.get();
+            javaProcessCount = processes.size();
+            List<String> commandLines = processes.stream().map(ShellProcesses::commandLine).toList();
+            ApplicationManager.getApplication().invokeLater(() -> {
+                if (disposed) return;
+                if (new JavaProcessesDialog(processes, commandLines).showAndGet()) killJavaNow(processes);
+            }, ModalityState.defaultModalityState());
+        });
+    }
+
+    /** "Kill All Now" in the Java Processes dialog: SIGKILL, so they stop at once (no shutdown hooks run). */
+    void killJavaNow(List<ProcessHandle> processes) {
+        List<ProcessHandle> alive = processes.stream().filter(ProcessHandle::isAlive).toList();
+        if (alive.isEmpty()) {
+            addSystemLine("No Java processes of yours running (this IDE excluded).");
+            return;
+        }
+        addSystemLine("Killing " + ShellProcesses.describe(alive) + " (SIGKILL)…");
+        alive.forEach(ProcessHandle::destroyForcibly);
+        AppExecutorUtil.getAppExecutorService().execute(this::refreshJavaCount);
+    }
+
+    /** Pid and command line of each Java process; closing it with "Kill All Now" returns OK. */
+    private final class JavaProcessesDialog extends DialogWrapper {
+        private final List<ProcessHandle> processes;
+        private final List<String> commandLines;
+
+        JavaProcessesDialog(List<ProcessHandle> processes, List<String> commandLines) {
+            super(project);
+            this.processes = processes;
+            this.commandLines = commandLines;
+            setTitle("Java Processes");
+            setOKButtonText("Kill All Now");
+            setCancelButtonText("Close");
+            getOKAction().setEnabled(!processes.isEmpty());
+            // Enter must not kill everything: Close is the default button
+            getOKAction().putValue(DEFAULT_ACTION, null);
+            getCancelAction().putValue(DEFAULT_ACTION, Boolean.TRUE);
+            init();
+        }
+
+        @Override
+        protected JComponent createCenterPanel() {
+            Object[][] rows = new Object[processes.size()][];
+            for (int i = 0; i < rows.length; i++) rows[i] = new Object[]{processes.get(i).pid(), commandLines.get(i)};
+            JBTable table = new JBTable(new DefaultTableModel(rows, new Object[]{"PID", "Command line"}) {
+                @Override
+                public boolean isCellEditable(int row, int column) {
+                    return false;
+                }
+
+                @Override
+                public Class<?> getColumnClass(int column) {
+                    return column == 0 ? Long.class : String.class;
+                }
+            });
+            // command lines are arbitrary text: never render them as HTML
+            DefaultTableCellRenderer renderer = new DefaultTableCellRenderer();
+            renderer.putClientProperty("html.disable", Boolean.TRUE);
+            table.setDefaultRenderer(String.class, renderer);
+            table.setAutoCreateRowSorter(true);
+            table.getColumnModel().getColumn(0).setMaxWidth(JBUI.scale(100));
+            table.getEmptyText().setText("No Java processes of yours running");
+            JPanel panel = new JPanel(new BorderLayout(0, JBUI.scale(8)));
+            panel.add(new JBLabel(processes.size() + (processes.size() == 1 ? " Java process" : " Java processes")
+                    + " of yours (this IDE excluded). Kill All Now sends SIGKILL: they stop at once, without shutdown hooks."),
+                    BorderLayout.NORTH);
+            JBScrollPane scroll = new JBScrollPane(table);
+            scroll.setPreferredSize(JBUI.size(800, 300));
+            panel.add(scroll, BorderLayout.CENTER);
+            return panel;
+        }
     }
 
     /** Kills the whole session: the shell, the running command and anything left running in the background. */
@@ -1968,6 +2083,7 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
     public void dispose() {
         disposed = true;
         filterTimer.stop();
+        javaCountRefresh.cancel(false);
         discard(pendingCompletion);
         pendingCompletion = null;
         killShell(false);

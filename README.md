@@ -2,7 +2,7 @@
 
 A **Log Console** tool window: a bash session where you type or paste commands (e.g. `sh run-all.sh`
 that starts stubs + apps), with the output colored and filterable. Linux and macOS only: it needs bash, and
-Stop/Kill find processes via `/proc` (Linux) — on Windows the shell does not start.
+Rerun/Kill and the Java button find processes via `/proc` (Linux) — on Windows the shell does not start.
 
 - **Command box** at the bottom (drag the divider to resize it): Enter runs, Shift+Enter adds a line,
   pasted multi-line text runs line by line, Tab completes, ↑/↓ history, Ctrl+C interrupts, Ctrl+L clears.
@@ -38,12 +38,15 @@ Stop/Kill find processes via `/proc` (Linux) — on Windows the shell does not s
   previous/next, copy bookmarked lines, remove all. The bookmark icon in the toolbar shows/hides the box.
 - **Save Output…** (toolbar) writes the output to a file; with a filter active it asks: all lines or the shown ones.
 - Multiple tabs (`+` in the tool window title); one tab per script.
-- **Stop** ends everything started from the tab but keeps the shell (and your `cd`/exports): the running
+- **Java: 3** (toolbar) counts your running Java processes (the IDE itself excluded, refreshed every few seconds).
+  Click it for a list with each pid and command line; **Kill All Now** in that dialog stops them at once (SIGKILL,
+  so no shutdown hooks run).
+- **Rerun** first stops everything started from the tab but keeps the shell (and your `cd`/exports): the running
   command, background jobs and apps a script left running, even when it ended without `wait` or an app
   detached with `setsid` (each tab's shell gets a `LOG_CONSOLE_SESSION` variable that its processes inherit). SIGTERM first so Spring shutdown hooks run; anything alive after 10s gets SIGKILL.
-  If bash itself is waiting (e.g. in `read`), Stop sends Ctrl+C instead.
-  **Kill shell** does the same and ends bash itself with SIGHUP (anything still alive after 5s gets SIGKILL), then
-  opens a fresh shell.
+  If bash itself is waiting (e.g. in `read`), it sends Ctrl+C instead.
+  **Kill shell** ends everything started from the tab and bash itself (SIGHUP; anything still alive after 5s gets
+  SIGKILL), then opens a fresh shell.
   Ctrl+click (⌘+click) *Kill shell* to also SIGTERM all your Java processes, like `pkill -f java` (only your user's) (after a confirmation
   that lists each pid and command line; the IDE itself and the processes it runs under are spared). Ctrl+C in the command box interrupts the running command.
   Closing a tab kills too. Not reachable: processes owned by another daemon, e.g. apps run by the

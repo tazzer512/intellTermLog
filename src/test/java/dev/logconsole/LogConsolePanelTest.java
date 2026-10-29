@@ -8,6 +8,7 @@ import com.intellij.ide.util.PropertiesComponent;
 import com.intellij.openapi.actionSystem.ActionGroup;
 import com.intellij.openapi.actionSystem.ActionToolbar;
 import com.intellij.openapi.actionSystem.AnAction;
+import com.intellij.openapi.actionSystem.AnActionEvent;
 import com.intellij.openapi.actionSystem.DefaultActionGroup;
 import com.intellij.openapi.actionSystem.ex.ActionUtil;
 import com.intellij.openapi.editor.LogicalPosition;
@@ -18,6 +19,7 @@ import com.intellij.openapi.keymap.KeymapUtil;
 import com.intellij.openapi.util.Disposer;
 import com.intellij.openapi.util.io.FileUtil;
 import com.intellij.testFramework.PlatformTestUtil;
+import com.intellij.testFramework.TestActionEvent;
 import com.intellij.testFramework.fixtures.BasePlatformTestCase;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 
@@ -696,7 +698,7 @@ public class LogConsolePanelTest extends BasePlatformTestCase {
     public void testToolbarHasKillButNoInterruptButton() {
         List<String> texts = toolbarActionTexts();
         assertTrue(texts.toString(), texts.contains("Kill Shell and All Processes"));
-        assertTrue(texts.toString(), texts.contains("Stop All Processes (Keep Shell)"));
+        assertTrue(texts.toString(), texts.contains("Java Processes"));
         assertFalse("Ctrl+C in the command box interrupts instead", texts.stream().anyMatch(t -> t.startsWith("Interrupt")));
     }
 
@@ -846,6 +848,30 @@ public class LogConsolePanelTest extends BasePlatformTestCase {
         waitUntil("the Java process to end", () -> !javaApp.isAlive());
         waitUntil("a new shell", () -> panel.shell != null && shellPid() != shell && panel.shellReady);
         assertTrue(panel.outputText(true), panel.outputText(true).contains("like pkill -f java"));
+    }
+
+    public void testJavaButtonShowsTheCount() throws Exception {
+        Process javaApp = new ProcessBuilder("bash", "-c", "sleep 412; : java").start();
+        started.add(javaApp);
+        panel.javaProcesses = () -> List.of(javaApp.toHandle());
+        panel.refreshJavaCount();
+        assertEquals(1, panel.javaProcessCount);
+        AnAction button = Arrays.stream(((DefaultActionGroup) ((ActionToolbar) panel.getToolbar()).getActionGroup())
+                .getChildActionsOrStubs()).filter(a -> "Java Processes".equals(a.getTemplateText())).findFirst().orElseThrow();
+        AnActionEvent event = TestActionEvent.createTestEvent(button);
+        button.update(event);
+        assertEquals("Java: 1", event.getPresentation().getText());
+    }
+
+    public void testKillJavaNowKillsAtOnce() throws Exception {
+        Process javaApp = new ProcessBuilder("bash", "-c", "trap '' TERM; sleep 413; : java").start();
+        started.add(javaApp);
+        panel.javaProcesses = List::of;
+        panel.killJavaNow(List.of(javaApp.toHandle()));
+        assertTrue("SIGKILL, so even a process ignoring SIGTERM ends", javaApp.waitFor(5, java.util.concurrent.TimeUnit.SECONDS));
+        panel.flush();
+        assertTrue(panel.outputText(true), panel.outputText(true).contains("(SIGKILL)"));
+        waitUntil("the count to refresh", () -> panel.javaProcessCount == 0);
     }
 
     public void testRealJavaProcessListNeverIncludesThisIde() {
