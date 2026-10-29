@@ -1,3 +1,5 @@
+import org.jetbrains.intellij.platform.gradle.TestFrameworkType
+
 plugins {
     id("java")
     id("org.jetbrains.intellij.platform") version "2.19.0"
@@ -16,12 +18,15 @@ repositories {
 dependencies {
     intellijPlatform {
         intellijIdea("2026.1.5")
+        testFramework(TestFrameworkType.Platform)
     }
     testImplementation(platform("org.junit:junit-bom:5.11.4"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     // The IntelliJ Platform test setup references JUnit 4 classes even when the tests use JUnit 5.
-    testRuntimeOnly("junit:junit:4.13.2")
+    // Panel tests use the platform's BasePlatformTestCase (JUnit 3/4 style), run through the vintage engine.
+    testImplementation("junit:junit:4.13.2")
+    testRuntimeOnly("org.junit.vintage:junit-vintage-engine")
 }
 
 tasks.withType<JavaCompile> {

@@ -9,14 +9,23 @@ that starts stubs + apps), with the output colored and filterable:
   It's one persistent shell per tab, so `cd`, `export` and aliases carry over. While a command runs,
   what you type goes to that program's input.
 
-- **Red** error lines, **yellow** warning lines, everything else default (white in a dark theme).
+- **Red** error lines, **yellow** warning lines, **green** debug lines, everything else default (white in a
+  dark theme). The ⚙ button in the left toolbar opens the settings to change the color per level.
   Stack traces (`at …`, `Caused by:`, `... 12 more`) keep the color of the log line above them.
   The level token appearing *first* in a line wins, so `INFO … got ERROR from stub` stays white.
 - **Live filter** on keyword or regex, case-sensitive or not, *include* or *exclude* matching lines;
   matches are highlighted. Level toggles: Errors / Warnings / Debug (DEBUG, TRACE) / Other (INFO, rest).
   Each toggle shows its count, e.g. *Errors (12)*, and has ▲/▼ buttons to jump to the previous/next
-  error, warning or debug line, which gets selected (wrapping around; a stack trace counts as part of its line).
-- Scroll-to-end toggle, soft-wrap, clear.
+  error, warning or debug entry, which gets selected and marked with a yellow box, wrapping around. While
+  stepping, the toggle shows where you are, e.g. *Errors (3/12)*. Counts and jumps are per entry: a stack trace
+  (and an exception printed right below its ERROR line) belongs to its entry, and back-to-back errors are
+  separate entries. A jump pauses scrolling.
+- Next to the filter field: the line counter (*Lines: 1,234*, or *Lines: 120 of 1,234* while filtering) and,
+  for an include filter, the match counter (*3/17*) with ▲/▼ to step through the matches like the IDE's
+  Find bar. Enter / Shift+Enter in the filter field go to the next / previous match.
+- The ▲/▼ arrows in the left toolbar scroll up/down one page (and pause scrolling).
+- **Pause Scrolling** toggle keeps the view still while output arrives; *Scroll to the Top* shows the first
+  line (and pauses), *Scroll to the End* shows the last line and follows new output again. Soft-wrap, clear.
 - **Bookmarks**: right-click a line → *Add Bookmark* / *Add Bookmark with Note…* (or click the gutter,
   F11 / Shift+F11). The **Bookmarks** box on the right lists them; click one to jump to it, double-click
   to jump even when the filter hides it (the filter is cleared). Buttons: add at caret, remove, edit note,
@@ -29,7 +38,8 @@ that starts stubs + apps), with the output colored and filterable:
   Closing a tab kills too. Not reachable: processes owned by another daemon, e.g. apps run by the
   Gradle daemon (`gradle bootRun` without `--no-daemon`) or `docker run -d` / `docker compose up -d`.
 - Right-click a `.sh` file → **Run 'run-all.sh' in Log Console** (project view, editor, editor tab).
-- Settings | Tools | Log Console: level regexes, colors, max lines per tab.
+- Settings | Tools | Log Console (or ⚙ in the toolbar): level regexes, a color per level (error, warning,
+  debug, and optionally other), max lines per tab.
 
 ## Build & install
 

@@ -7,7 +7,8 @@ User-facing behavior is described in `README.md`; keep it in sync when behavior 
 ## Commands
 
 ```bash
-./gradlew test          # unit tests (JUnit 5); some run real bash/processes, Linux (and macOS) only
+./gradlew test          # JUnit 5 unit tests + LogConsolePanelTest (BasePlatformTestCase via the vintage engine);
+                        # some run real bash/processes, Linux (and macOS) only
 ./gradlew buildPlugin   # -> build/distributions/log-console-<version>.zip
 ./gradlew runIde        # sandbox IDE with the plugin, opens samples/ (right-click demo.sh -> Run in Log Console)
 ```
@@ -18,7 +19,9 @@ Restarting a running sandbox IDE: find it with `pgrep -f "[i]dea-2026.1.5/jbr/bi
 pids. Do **not** use `pkill -f "idea-2026.1.5/jbr/bin/java"`: the pattern matches your own shell command
 and kills it. The sandbox log is `.intellijPlatform/sandbox/log-console/IU-*/log_runIde/idea.log`; check it
 for `Loaded custom plugins: Log Console` and for ` ERROR ` lines. The sandbox runs on Wayland, so it can't be
-screenshotted; UI behavior must be checked by the user.
+screenshotted. Test UI behavior in `LogConsolePanelTest` instead: it creates a real panel and editor (with a real
+shell), feeds lines with `enqueue` + `flush`, and calls the same methods the toolbar buttons call. Fields and
+methods it needs are package-private.
 
 ## Layout (`src/main/java/dev/logconsole`)
 
@@ -28,7 +31,7 @@ screenshotted; UI behavior must be checked by the user.
 | `ShellOutputParser` | Splits PTY output into lines, strips ANSI, handles `\r` overwrites, recognizes the prompt/completion markers. Pure, tested. |
 | `ShellText` | Quoting/escaping, word boundaries, file completion, tab titles. Pure, tested. |
 | `ShellProcesses` | Finds processes started from a shell (tree + session + env tag via `/proc`) for Stop/Kill. Tested. |
-| `LogClassifier` | Level of a line: the earliest-matching pattern wins; stack-trace continuation lines inherit. Tested. |
+| `LogClassifier` | Level of a line: the earliest-matching pattern wins; stack-trace continuation lines inherit. `continuesEntry` decides `LogLine.entryStart`, which the level counters and jumps use. Tested. |
 | `LogConsoleSettings` / `LogConsoleConfigurable` | App-level settings (patterns, colors, max lines), Settings \| Tools \| Log Console. |
 | `LogConsoleToolWindowFactory` | Tool window + tabs; `run(project, command)` reuses or opens a tab. |
 | `RunInLogConsoleAction` | "Run 'x.sh' in Log Console" on script files. |
@@ -50,6 +53,11 @@ screenshotted; UI behavior must be checked by the user.
 - Output is queued off-EDT (`pending`, capped at `MAX_PENDING`) and flushed in 50 ms batches on the EDT.
   `visibleLines.get(i)` is document line `i`. Bookmarks reference `LogLine` objects (identity), not line numbers.
 - Level highlighters are coalesced per run of same-level lines; a filter/level change rebuilds the document.
+- `scrollToEnd` = follow new output (the Pause Scrolling toggle is its inverse). Jumps and Scroll to the Top
+  clear it. The caret normally sits on the empty line after the output, so jumps treat that line specially.
+- Filter matches are recorded as document offsets (`matchStarts`/`matchEnds`) while highlighting, so match
+  navigation and the 3/17 counter need no rescans; `rebuild()` resets them.
+- `samples/demo.sh` must run under bash (`$RANDOM`); it re-execs itself with bash when started via `sh`.
 
 ## Conventions
 

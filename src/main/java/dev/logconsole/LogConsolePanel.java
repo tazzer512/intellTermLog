@@ -37,12 +37,14 @@ import com.intellij.openapi.editor.ex.DocumentEx;
 import com.intellij.openapi.editor.ex.EditorEx;
 import com.intellij.openapi.editor.impl.ContextMenuPopupHandler;
 import com.intellij.openapi.editor.impl.DocumentImpl;
+import com.intellij.openapi.editor.markup.EffectType;
 import com.intellij.openapi.editor.markup.HighlighterLayer;
 import com.intellij.openapi.editor.markup.HighlighterTargetArea;
 import com.intellij.openapi.editor.markup.GutterIconRenderer;
 import com.intellij.openapi.editor.markup.MarkupModel;
 import com.intellij.openapi.editor.markup.RangeHighlighter;
 import com.intellij.openapi.editor.markup.TextAttributes;
+import com.intellij.openapi.options.ShowSettingsUtil;
 import com.intellij.openapi.project.DumbAwareAction;
 import com.intellij.openapi.project.DumbAwareToggleAction;
 import com.intellij.openapi.project.Project;
@@ -67,6 +69,7 @@ import com.intellij.ui.ToolbarDecorator;
 import com.intellij.ui.awt.RelativePoint;
 import com.intellij.ui.components.JBCheckBox;
 import com.intellij.ui.components.JBLabel;
+import it.unimi.dsi.fastutil.ints.IntArrayList;
 import com.intellij.ui.components.JBList;
 import com.intellij.ui.components.JBScrollPane;
 import com.intellij.ui.components.JBTextArea;
@@ -75,6 +78,7 @@ import com.intellij.util.concurrency.AppExecutorUtil;
 import com.intellij.util.concurrency.SequentialTaskExecutor;
 import com.intellij.util.io.BaseOutputReader;
 import com.intellij.util.ui.JBUI;
+import com.intellij.util.ui.UIUtil;
 import org.jetbrains.annotations.NotNull;
 
 import javax.swing.AbstractAction;
@@ -92,6 +96,7 @@ import javax.swing.event.ListDataListener;
 import javax.swing.text.BadLocationException;
 import javax.swing.text.DefaultEditorKit;
 import java.awt.BorderLayout;
+import java.awt.Color;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.awt.Font;
@@ -154,21 +159,23 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
     private final Project project;
     private Content tab;
 
-    private final SearchTextField filterField = new SearchTextField("logConsole.filterHistory");
+    final SearchTextField filterField = new SearchTextField("logConsole.filterHistory");
     private final JBCheckBox regexBox = new JBCheckBox("Regex");
     private final JBCheckBox caseBox = new JBCheckBox("Match case");
-    private final JBCheckBox excludeBox = new JBCheckBox("Exclude");
-    private final JBCheckBox errorBox = new JBCheckBox("Errors", true);
+    final JBCheckBox excludeBox = new JBCheckBox("Exclude");
+    final JBCheckBox errorBox = new JBCheckBox("Errors", true);
     private final JBCheckBox warnBox = new JBCheckBox("Warnings", true);
     private final JBCheckBox debugBox = new JBCheckBox("Debug", true);
     private final JBCheckBox otherBox = new JBCheckBox("Other", true);
     private final JBLabel statusLabel = new JBLabel();
+    final JBLabel matchLabel = new JBLabel();
+    final JBLabel lineCountLabel = new JBLabel();
     private final JBLabel promptLabel = new JBLabel();
     private final JBTextArea input = new JBTextArea(3, 80);
     private final Timer filterTimer = new Timer(250, e -> applyFilter());
 
     private final DocumentEx document = new DocumentImpl("", true);
-    private final EditorEx editor;
+    final EditorEx editor;
 
     private final ConcurrentLinkedQueue<LogLine> pending = new ConcurrentLinkedQueue<>();
     private final AtomicBoolean flushScheduled = new AtomicBoolean();
@@ -178,21 +185,32 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
 
     private final List<LogLine> lines = new ArrayList<>();
     /** Lines currently in the document; index == document line number. */
-    private final List<LogLine> visibleLines = new ArrayList<>();
+    final List<LogLine> visibleLines = new ArrayList<>();
     private LogLevel previousLevel;
     private LogClassifier classifier = LogClassifier.fromSettings();
     private TextAttributes errorAttrs;
     private TextAttributes warnAttrs;
+    private TextAttributes debugAttrs;
+    /** Null unless a custom color for other lines is set. */
+    private TextAttributes otherAttrs;
     private TextAttributes systemAttrs;
     private TextAttributes commandAttrs;
     private Pattern filterPattern;
     private String filterError;
+    /** Document ranges of the filter matches, in document order (only filled in include mode). */
+    private final IntArrayList matchStarts = new IntArrayList();
+    private final IntArrayList matchEnds = new IntArrayList();
+    /** 1-based index of the match the last match jump selected; 0 when none. */
+    private int currentMatch;
     /** Set while several filter controls change at once, so they rebuild the output only once. */
     private boolean bulkFilterChange;
     private int errorCount;
+    /** The level the last level jump went to, and the number of its entry (shown as "Errors (3/12)"); null when none. */
+    private LogLevel navLevel;
+    private int navIndex;
     private int warnCount;
     private int debugCount;
-    private boolean scrollToEnd = true;
+    boolean scrollToEnd = true;
     private int lineCounter;
     /** OUTPUT lines in {@link #lines} and in {@link #visibleLines}, kept up to date for the status bar. */
     private int outputTotal;
@@ -206,6 +224,9 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
     /** Highlighters of the bookmarked lines currently in the document. */
     private final Map<LogLine, RangeHighlighter> bookmarkHighlighters = new IdentityHashMap<>();
     private TextAttributes bookmarkAttrs;
+    private TextAttributes jumpAttrs;
+    /** Marks the line the last jump landed on; gone (invalid) after a rebuild. */
+    RangeHighlighter jumpHighlighter;
     /** Document line the editor context menu was opened on. */
     private int popupLine = -1;
 
@@ -268,11 +289,16 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
                 if (!bulkFilterChange) filterTimer.restart();
             }
         });
+        // Enter applies the filter, or (once applied) moves to the next match like the IDE's Find; Shift+Enter goes back.
         filterField.getTextEditor().addActionListener(e -> {
             filterField.addCurrentTextToHistory();
+            boolean applied = !filterTimer.isRunning();
             filterTimer.stop();
-            applyFilter();
+            if (!applied) applyFilter();
+            jumpToMatch((e.getModifiers() & ActionEvent.SHIFT_MASK) == 0);
         });
+        filterField.getTextEditor().getInputMap().put(
+                KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, InputEvent.SHIFT_DOWN_MASK), javax.swing.JTextField.notifyAction);
         for (JBCheckBox box : List.of(regexBox, caseBox, excludeBox)) {
             box.addItemListener(e -> applyFilter());
         }
@@ -354,6 +380,12 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         filterRow.add(new JBLabel("Filter:"), BorderLayout.WEST);
         filterRow.add(filterField, BorderLayout.CENTER);
         JPanel options = new JPanel(new FlowLayout(FlowLayout.LEFT, JBUI.scale(8), 0));
+        lineCountLabel.setToolTipText("Output lines shown / in this tab (the oldest are dropped beyond the maximum in Settings)");
+        options.add(lineCountLabel);
+        matchLabel.setForeground(JBColor.GRAY);
+        options.add(matchLabel);
+        options.add(navigationButtons("Match", () -> jumpToMatch(false), () -> jumpToMatch(true),
+                () -> !matchStarts.isEmpty()));
         for (JComponent c : List.of(regexBox, caseBox, excludeBox, new JBLabel("|"))) {
             options.add(c);
         }
@@ -396,22 +428,29 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
 
     /** A level checkbox followed by previous/next buttons that jump between that level's lines. */
     private JComponent withNavigation(JBCheckBox box, LogLevel level, String name, java.util.function.IntSupplier count) {
-        DefaultActionGroup group = new DefaultActionGroup();
-        group.add(action("Previous " + name, "Jump to the previous " + name.toLowerCase(), AllIcons.Actions.PreviousOccurence,
-                () -> jumpTo(level, false), () -> count.getAsInt() > 0 && box.isSelected()));
-        group.add(action("Next " + name, "Jump to the next " + name.toLowerCase(), AllIcons.Actions.NextOccurence,
-                () -> jumpTo(level, true), () -> count.getAsInt() > 0 && box.isSelected()));
-        ActionToolbar toolbar = ActionManager.getInstance().createActionToolbar("LogConsoleLevelNavigation", group, true);
-        toolbar.setTargetComponent(this);
-        toolbar.setReservePlaceAutoPopupIcon(false);
-        JComponent buttons = toolbar.getComponent();
-        buttons.setBorder(JBUI.Borders.empty());
-        buttons.setOpaque(false);
+        JComponent buttons = navigationButtons(name, () -> jumpTo(level, false), () -> jumpTo(level, true),
+                () -> count.getAsInt() > 0 && box.isSelected());
         JPanel panel = new JPanel(new BorderLayout());
         panel.setOpaque(false);
         panel.add(box, BorderLayout.WEST);
         panel.add(buttons, BorderLayout.EAST);
         return panel;
+    }
+
+    /** Compact previous/next buttons, as in the IDE's Find bar. */
+    private JComponent navigationButtons(String name, Runnable previous, Runnable next, BooleanSupplier enabled) {
+        DefaultActionGroup group = new DefaultActionGroup();
+        group.add(action("Previous " + name, "Jump to the previous " + name.toLowerCase(), AllIcons.Actions.PreviousOccurence,
+                previous, enabled));
+        group.add(action("Next " + name, "Jump to the next " + name.toLowerCase(), AllIcons.Actions.NextOccurence,
+                next, enabled));
+        ActionToolbar toolbar = ActionManager.getInstance().createActionToolbar("LogConsoleNavigation", group, true);
+        toolbar.setTargetComponent(this);
+        toolbar.setReservePlaceAutoPopupIcon(false);
+        JComponent buttons = toolbar.getComponent();
+        buttons.setBorder(JBUI.Borders.empty());
+        buttons.setOpaque(false);
+        return buttons;
     }
 
     private ActionToolbar createToolbar() {
@@ -426,20 +465,25 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         group.add(action("Kill Shell and All Processes", "Kill the shell and everything started from it, then open a fresh shell",
                 AllIcons.Debugger.KillProcess, () -> killShell(true), () -> shell != null));
         group.addSeparator();
-        group.add(action("Previous Error", "Jump to the previous error", AllIcons.Actions.PreviousOccurence,
-                () -> jumpTo(LogLevel.ERROR, false), () -> errorCount > 0 && errorBox.isSelected()));
-        group.add(action("Next Error", "Jump to the next error", AllIcons.Actions.NextOccurence,
-                () -> jumpTo(LogLevel.ERROR, true), () -> errorCount > 0 && errorBox.isSelected()));
-        group.add(new DumbAwareToggleAction("Scroll to the End", null, AllIcons.RunConfigurations.Scroll_down) {
+        group.add(action("Scroll Up", "Scroll up one page and pause scrolling", AllIcons.Actions.PreviousOccurence,
+                () -> scrollPage(false), () -> !visibleLines.isEmpty()));
+        group.add(action("Scroll Down", "Scroll down one page and pause scrolling", AllIcons.Actions.NextOccurence,
+                () -> scrollPage(true), () -> !visibleLines.isEmpty()));
+        group.add(action("Scroll to the Top", "Show the first line and pause scrolling", AllIcons.Actions.MoveUp,
+                this::scrollToTop, () -> !visibleLines.isEmpty()));
+        group.add(action("Scroll to the End", "Show the last line and follow new output again",
+                AllIcons.RunConfigurations.Scroll_down, this::scrollToEndAndFollow, () -> true));
+        group.add(new DumbAwareToggleAction("Pause Scrolling", "Keep the view where it is while new output arrives",
+                AllIcons.Actions.Pause) {
             @Override
             public boolean isSelected(@NotNull AnActionEvent e) {
-                return scrollToEnd;
+                return !scrollToEnd;
             }
 
             @Override
             public void setSelected(@NotNull AnActionEvent e, boolean state) {
-                scrollToEnd = state;
-                if (state) scrollToEnd();
+                scrollToEnd = !state;
+                if (!state) scrollToEnd();
             }
 
             @Override
@@ -482,6 +526,11 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
             }
         });
         group.add(action("Clear (Ctrl+L)", "Clear all output", AllIcons.Actions.GC, this::clear, () -> !lines.isEmpty()));
+        group.addSeparator();
+        group.add(action("Log Console Settings…", "Configure the colors and patterns per log level",
+                AllIcons.General.Settings,
+                () -> ShowSettingsUtil.getInstance().showSettingsDialog(project, LogConsoleConfigurable.class),
+                () -> true));
 
         ActionToolbar toolbar = ActionManager.getInstance().createActionToolbar("LogConsole", group, false);
         toolbar.setTargetComponent(this);
@@ -538,17 +587,26 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         LogConsoleSettings settings = LogConsoleSettings.getInstance();
         errorAttrs = new TextAttributes(settings.errorColor(), null, null, null, Font.PLAIN);
         warnAttrs = new TextAttributes(settings.warnColor(), null, null, null, Font.PLAIN);
+        debugAttrs = new TextAttributes(settings.debugColor(), null, null, null, Font.PLAIN);
+        Color other = settings.otherColor();
+        otherAttrs = other == null ? null : new TextAttributes(other, null, null, null, Font.PLAIN);
         systemAttrs = new TextAttributes(JBColor.GRAY, null, null, null, Font.ITALIC);
         commandAttrs = new TextAttributes(new JBColor(0x1A5FB4, 0x6CB6FF), null, null, null, Font.BOLD);
         bookmarkAttrs = new TextAttributes(null, new JBColor(0xDCE8FA, 0x2D3B4E), null, null, Font.PLAIN);
+        jumpAttrs = new TextAttributes(null, new JBColor(0xFFF0A0, 0x5C5124), new JBColor(0xE0B000, 0xC9A227),
+                EffectType.BOXED, Font.PLAIN);
         errorBox.setForeground(settings.errorColor());
         warnBox.setForeground(settings.warnColor());
+        debugBox.setForeground(settings.debugColor());
+        if (other != null) otherBox.setForeground(other);
+        else otherBox.setForeground(UIUtil.getLabelForeground());
     }
 
     private void onSettingsChanged() {
         classifier = LogClassifier.fromSettings();
         refreshAttributes();
         previousLevel = null;
+        navLevel = null;
         lines.forEach(this::classify);
         trimToMaxLines();
         recount();
@@ -957,7 +1015,7 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         enqueue(new LogLine(text, LogLine.Kind.SYSTEM));
     }
 
-    private void enqueue(LogLine line) {
+    void enqueue(LogLine line) {
         pending.add(line);
         if (pendingCount.incrementAndGet() > MAX_PENDING && pending.poll() != null) {
             pendingCount.decrementAndGet();
@@ -970,7 +1028,7 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         }
     }
 
-    private void flush() {
+    void flush() {
         flushScheduled.set(false);
         if (disposed) return;
         List<LogLine> batch = new ArrayList<>();
@@ -1001,11 +1059,14 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
     private void classify(LogLine line) {
         if (line.kind != LogLine.Kind.OUTPUT) return;
         line.level = classifier.classify(line.text, previousLevel);
+        line.entryStart = !classifier.continuesEntry(line.text, previousLevel);
         previousLevel = line.level;
     }
 
+    /** Errors/warnings/debug are counted per entry (a stack trace is part of its error), like the jumps stop. */
     private void count(LogLine line, int delta) {
         if (line.kind == LogLine.Kind.OUTPUT) outputTotal += delta;
+        if (!line.entryStart) return;
         if (line.level == LogLevel.ERROR) errorCount += delta;
         else if (line.level == LogLevel.WARN) warnCount += delta;
         else if (line.level == LogLevel.DEBUG) debugCount += delta;
@@ -1029,6 +1090,7 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
             if (line.bookmarkNote != null) bookmarks.remove(line);
         }
         dropped.clear();
+        navLevel = null; // entry numbers shift
         return true;
     }
 
@@ -1078,7 +1140,8 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
                 case WARN -> warnAttrs;
                 case SYSTEM -> systemAttrs;
                 case COMMAND -> commandAttrs;
-                case DEBUG, OTHER -> null;
+                case DEBUG -> debugAttrs;
+                case OTHER -> otherAttrs;
             };
             if (attrs != runAttrs) {
                 if (runAttrs != null && runEnd > runStart) {
@@ -1092,6 +1155,8 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
                 Matcher m = filterPattern.matcher(line.text);
                 while (m.find()) {
                     if (m.end() > m.start()) {
+                        matchStarts.add(offset + m.start());
+                        matchEnds.add(offset + m.end());
                         markup.addRangeHighlighter(offset + m.start(), offset + m.end(), HighlighterLayer.SELECTION - 1,
                                 matchAttrs, HighlighterTargetArea.EXACT_RANGE);
                     }
@@ -1108,6 +1173,7 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
 
     private void rebuild() {
         editor.getMarkupModel().removeAllHighlighters();
+        clearMatches();
         bookmarkHighlighters.clear();
         visibleLines.clear();
         outputShown = 0;
@@ -1116,7 +1182,7 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         bookmarkList.repaint();
     }
 
-    private void applyFilter() {
+    void applyFilter() {
         String text = filterField.getText();
         filterError = null;
         if (text.isEmpty()) {
@@ -1146,6 +1212,8 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         bookmarks.removeAll();
         bookmarkHighlighters.clear();
         editor.getMarkupModel().removeAllHighlighters();
+        clearMatches();
+        navLevel = null;
         document.setText("");
         updateStatus();
     }
@@ -1155,17 +1223,60 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         editor.getScrollingModel().scrollToCaret(ScrollType.MAKE_VISIBLE);
     }
 
+    void scrollToEndAndFollow() {
+        navLevel = null;
+        scrollToEnd = true;
+        scrollToEnd();
+        updateStatus();
+    }
+
+    /** Scrolls a page (keeping one line of overlap), like Page Up/Down; pauses following the end. */
+    void scrollPage(boolean down) {
+        navLevel = null;
+        scrollToEnd = false;
+        java.awt.Rectangle area = editor.getScrollingModel().getVisibleArea();
+        int step = Math.max(editor.getLineHeight(), area.height - editor.getLineHeight());
+        editor.getScrollingModel().scrollVertically(Math.max(0, area.y + (down ? step : -step)));
+        updateStatus();
+    }
+
+    void scrollToTop() {
+        navLevel = null;
+        scrollToEnd = false;
+        editor.getCaretModel().moveToOffset(0);
+        editor.getScrollingModel().scrollTo(new LogicalPosition(0, 0), ScrollType.MAKE_VISIBLE);
+        updateStatus();
+    }
+
+    /** 1-based number of the entry of that line's level that contains the line, counted like the level counters. */
+    private int entryNumber(LogLine target) {
+        int n = 0;
+        for (LogLine line : lines) {
+            if (line.level == target.level && line.entryStart) n++;
+            if (line == target) break;
+        }
+        return Math.max(n, 1);
+    }
+
     /** Moves to the first line of the next/previous block of that level (e.g. an error plus its stack trace), wrapping around. */
-    private void jumpTo(LogLevel level, boolean forward) {
+    void jumpTo(LogLevel level, boolean forward) {
         int size = visibleLines.size();
         if (size == 0) return;
         int current = editor.getCaretModel().getLogicalPosition().line;
+        // The caret usually sits on the empty line after the output (following the end): start from the
+        // first line going forward, from the last one going back.
+        if (current >= size) current = forward ? -1 : size;
         for (int n = 1; n <= size; n++) {
             int i = Math.floorMod(current + (forward ? n : -n), size);
-            boolean blockStart = visibleLines.get(i).level == level
-                    && (i == 0 || visibleLines.get(i - 1).level != level);
+            LogLine line = visibleLines.get(i);
+            // an entry start, or the first visible line of an entry whose start the filter hides
+            boolean blockStart = line.level == level
+                    && (line.entryStart || i == 0 || visibleLines.get(i - 1).level != level);
             if (blockStart) {
                 showLine(i);
+                navLevel = level;
+                navIndex = entryNumber(line);
+                updateStatus();
                 return;
             }
         }
@@ -1344,8 +1455,10 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
             case ERROR -> new SimpleTextAttributes(SimpleTextAttributes.STYLE_PLAIN, errorAttrs.getForegroundColor());
             case WARN -> new SimpleTextAttributes(SimpleTextAttributes.STYLE_PLAIN, warnAttrs.getForegroundColor());
             case COMMAND -> new SimpleTextAttributes(SimpleTextAttributes.STYLE_PLAIN, commandAttrs.getForegroundColor());
+            case DEBUG -> new SimpleTextAttributes(SimpleTextAttributes.STYLE_PLAIN, debugAttrs.getForegroundColor());
             case SYSTEM -> SimpleTextAttributes.GRAYED_ITALIC_ATTRIBUTES;
-            case DEBUG, OTHER -> SimpleTextAttributes.REGULAR_ATTRIBUTES;
+            case OTHER -> otherAttrs == null ? SimpleTextAttributes.REGULAR_ATTRIBUTES
+                    : new SimpleTextAttributes(SimpleTextAttributes.STYLE_PLAIN, otherAttrs.getForegroundColor());
         };
     }
 
@@ -1409,6 +1522,7 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
 
     /** Scrolls to a bookmarked line; with {@code reveal}, clears the filter first if it hides the line. */
     private void goTo(LogLine line, boolean reveal) {
+        navLevel = null;
         int docLine = visibleLines.indexOf(line);
         if (docLine < 0) {
             if (!reveal) return;
@@ -1419,16 +1533,63 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         showLine(docLine);
     }
 
+    private void clearMatches() {
+        matchStarts.clear();
+        matchEnds.clear();
+        currentMatch = 0;
+    }
+
+    /** Selects the next/previous filter match from the caret, wrapping around, like the IDE's Find. */
+    void jumpToMatch(boolean forward) {
+        if (matchStarts.isEmpty()) return;
+        int index;
+        if (editor.getCaretModel().getLogicalPosition().line >= visibleLines.size()) {
+            // following the end: start at the first match going forward, at the last going back
+            index = forward ? 0 : matchStarts.size() - 1;
+        } else {
+            boolean selected = editor.getSelectionModel().hasSelection();
+            int from = selected ? editor.getSelectionModel().getSelectionStart() : editor.getCaretModel().getOffset();
+            index = adjacentIndex(matchStarts, forward && !selected ? from - 1 : from, forward);
+        }
+        currentMatch = index + 1;
+        navLevel = null;
+        int start = matchStarts.getInt(index);
+        showRange(document.getLineNumber(start), start, matchEnds.getInt(index));
+        updateStatus();
+    }
+
+    /**
+     * Index of the first value greater than {@code anchor} (forward) or the last value less than it (backward)
+     * in an ascending list, wrapping around.
+     */
+    static int adjacentIndex(IntArrayList sorted, int anchor, boolean forward) {
+        int low = 0;
+        int high = sorted.size();
+        while (low < high) { // first index whose value is > anchor (forward) or >= anchor (backward)
+            int mid = (low + high) >>> 1;
+            int value = sorted.getInt(mid);
+            if (forward ? value <= anchor : value < anchor) low = mid + 1;
+            else high = mid;
+        }
+        if (forward) return low < sorted.size() ? low : 0;
+        return low > 0 ? low - 1 : sorted.size() - 1;
+    }
+
     /**
      * Centers a document line and selects it: the console viewer shows no caret, so without the selection
      * you could not tell which line a jump landed on. Stops following the end of the output.
      */
     private void showLine(int docLine) {
+        showRange(docLine, document.getLineStartOffset(docLine), document.getLineEndOffset(docLine));
+    }
+
+    private void showRange(int docLine, int start, int end) {
         scrollToEnd = false;
-        int start = document.getLineStartOffset(docLine);
-        int end = document.getLineEndOffset(docLine);
         editor.getCaretModel().moveToOffset(start);
         editor.getSelectionModel().setSelection(start, end);
+        // The selection is faint while the input field has the focus; this full-width mark is not.
+        if (jumpHighlighter != null && jumpHighlighter.isValid()) editor.getMarkupModel().removeHighlighter(jumpHighlighter);
+        jumpHighlighter = editor.getMarkupModel().addLineHighlighter(docLine, HighlighterLayer.SELECTION - 1, jumpAttrs);
         editor.getScrollingModel().scrollTo(new LogicalPosition(docLine, 0), ScrollType.CENTER);
     }
 
@@ -1513,14 +1674,24 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         if (filterError != null) s.append("   ·   Invalid regex: ").append(filterError);
         s.append("   ·   ").append(busy ? "Running" : shellReady ? "Idle" : "Starting shell");
         statusLabel.setText(s.toString());
-        errorBox.setText(String.format("Errors (%,d)", errorCount));
-        warnBox.setText(String.format("Warnings (%,d)", warnCount));
-        debugBox.setText(String.format("Debug (%,d)", debugCount));
+        lineCountLabel.setText(shown == total ? String.format("Lines: %,d", total) : String.format("Lines: %,d of %,d", shown, total));
+        if (filterPattern == null || excludeBox.isSelected()) matchLabel.setText("");
+        else if (matchStarts.isEmpty()) matchLabel.setText("No matches");
+        else if (currentMatch > 0) matchLabel.setText(String.format("%,d/%,d", currentMatch, matchStarts.size()));
+        else matchLabel.setText(String.format("%,d matches", matchStarts.size()));
+        errorBox.setText(levelText("Errors", LogLevel.ERROR, errorCount));
+        warnBox.setText(levelText("Warnings", LogLevel.WARN, warnCount));
+        debugBox.setText(levelText("Debug", LogLevel.DEBUG, debugCount));
+    }
+
+    private String levelText(String name, LogLevel level, int count) {
+        return navLevel == level ? String.format("%s (%,d/%,d)", name, navIndex, count) : String.format("%s (%,d)", name, count);
     }
 
     private String defaultDir() {
         String base = project.getBasePath();
-        return base != null ? base : System.getProperty("user.home");
+        // bash can't start in a directory that doesn't exist (e.g. a moved project, or a light test project)
+        return base != null && new java.io.File(base).isDirectory() ? base : System.getProperty("user.home");
     }
 
     @Override

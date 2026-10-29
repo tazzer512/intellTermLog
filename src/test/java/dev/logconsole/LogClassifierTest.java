@@ -5,6 +5,8 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class LogClassifierTest {
     private final LogClassifier classifier = defaults(false);
@@ -89,5 +91,21 @@ class LogClassifierTest {
         assertEquals(LogLevel.WARN, custom.classify("12:00 W/Tag: careful", null));
         assertEquals(LogLevel.DEBUG, custom.classify("12:00 D/Tag: detail", null));
         assertEquals(LogLevel.OTHER, custom.classify("12:00 ERROR not matched by the custom pattern", null));
+    }
+
+    @Test
+    void entryStarts() {
+        assertFalse(classifier.continuesEntry("12:00 ERROR first", null));
+        // a new ERROR line right after another error starts its own entry
+        assertFalse(classifier.continuesEntry("12:01 ERROR second", LogLevel.ERROR));
+        assertTrue(classifier.continuesEntry("java.lang.IllegalStateException: locked", LogLevel.ERROR));
+        assertTrue(classifier.continuesEntry("\tat a.B.c(B.java:1)", LogLevel.ERROR));
+        assertTrue(classifier.continuesEntry("Caused by: java.io.IOException", LogLevel.ERROR));
+        assertTrue(classifier.continuesEntry("\t... 12 more", LogLevel.ERROR));
+        // an exception after an INFO line is an error of its own
+        assertFalse(classifier.continuesEntry("java.lang.IllegalStateException: locked", LogLevel.OTHER));
+        assertFalse(classifier.continuesEntry("untagged", LogLevel.ERROR));
+        assertTrue(defaults(true).continuesEntry("untagged", LogLevel.ERROR));
+        assertFalse(defaults(true).continuesEntry("12:00 WARN tagged", LogLevel.ERROR));
     }
 }

@@ -25,6 +25,7 @@ public final class LogConsoleSettings implements PersistentStateComponent<LogCon
 
     static final JBColor DEFAULT_ERROR_COLOR = new JBColor(new Color(0xCC2B2B), new Color(0xFF6B68));
     static final JBColor DEFAULT_WARN_COLOR = new JBColor(new Color(0xA66F00), new Color(0xE8C547));
+    static final JBColor DEFAULT_DEBUG_COLOR = new JBColor(new Color(0x2E7D32), new Color(0x6FBF73));
 
     public static final class State {
         public String errorPattern = LogClassifier.DEFAULT_ERROR;
@@ -37,6 +38,9 @@ public final class LogConsoleSettings implements PersistentStateComponent<LogCon
         /** Hex color, or null for the theme-aware default. */
         public String errorColor;
         public String warnColor;
+        public String debugColor;
+        /** Hex color, or null for the editor's normal text color. */
+        public String otherColor;
 
         @Override
         public boolean equals(Object o) {
@@ -49,13 +53,15 @@ public final class LogConsoleSettings implements PersistentStateComponent<LogCon
                     && inheritUntagged == s.inheritUntagged
                     && maxLines == s.maxLines
                     && Objects.equals(errorColor, s.errorColor)
-                    && Objects.equals(warnColor, s.warnColor);
+                    && Objects.equals(warnColor, s.warnColor)
+                    && Objects.equals(debugColor, s.debugColor)
+                    && Objects.equals(otherColor, s.otherColor);
         }
 
         @Override
         public int hashCode() {
             return Objects.hash(errorPattern, warnPattern, debugPattern, otherPattern, continuationPattern,
-                    inheritUntagged, maxLines, errorColor, warnColor);
+                    inheritUntagged, maxLines, errorColor, warnColor, debugColor, otherColor);
         }
     }
 
@@ -86,6 +92,15 @@ public final class LogConsoleSettings implements PersistentStateComponent<LogCon
 
     Color warnColor() {
         return parseColor(state.warnColor, DEFAULT_WARN_COLOR);
+    }
+
+    Color debugColor() {
+        return parseColor(state.debugColor, DEFAULT_DEBUG_COLOR);
+    }
+
+    /** Null: other lines use the editor's normal text color. */
+    Color otherColor() {
+        return parseColor(state.otherColor, null);
     }
 
     static Color parseColor(String hex, Color fallback) {

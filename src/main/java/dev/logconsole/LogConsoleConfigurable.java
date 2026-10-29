@@ -8,13 +8,16 @@ import com.intellij.ui.JBIntSpinner;
 import com.intellij.ui.components.JBCheckBox;
 import com.intellij.ui.components.JBTextField;
 import com.intellij.util.ui.FormBuilder;
+import com.intellij.util.ui.UIUtil;
 import org.jetbrains.annotations.Nls;
 import org.jetbrains.annotations.Nullable;
 
+import javax.swing.Box;
 import javax.swing.JButton;
 import javax.swing.JComponent;
 import javax.swing.JPanel;
 import java.awt.Color;
+import java.awt.FlowLayout;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
@@ -28,6 +31,9 @@ public final class LogConsoleConfigurable implements Configurable {
             new JBCheckBox("Lines without a level keep the level of the previous line (multi-line log entries)");
     private final ColorPanel errorColor = new ColorPanel();
     private final ColorPanel warnColor = new ColorPanel();
+    private final ColorPanel debugColor = new ColorPanel();
+    private final JBCheckBox otherColorBox = new JBCheckBox("Custom color (else the editor's text color)");
+    private final ColorPanel otherColor = new ColorPanel();
     private final JBIntSpinner maxLines = new JBIntSpinner(100_000, 1_000, 5_000_000, 10_000);
 
     @Override
@@ -39,6 +45,11 @@ public final class LogConsoleConfigurable implements Configurable {
     public @Nullable JComponent createComponent() {
         JButton defaults = new JButton("Restore Defaults");
         defaults.addActionListener(e -> load(new LogConsoleSettings.State()));
+        otherColorBox.addItemListener(e -> otherColor.setEnabled(otherColorBox.isSelected()));
+        JPanel otherRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+        otherRow.add(otherColor);
+        otherRow.add(Box.createHorizontalStrut(8));
+        otherRow.add(otherColorBox);
         JPanel panel = FormBuilder.createFormBuilder()
                 .addLabeledComponent("Error pattern:", errorField)
                 .addLabeledComponent("Warning pattern:", warnField)
@@ -52,6 +63,8 @@ public final class LogConsoleConfigurable implements Configurable {
                 .addSeparator()
                 .addLabeledComponent("Error color:", errorColor)
                 .addLabeledComponent("Warning color:", warnColor)
+                .addLabeledComponent("Debug color:", debugColor)
+                .addLabeledComponent("Other levels color:", otherRow)
                 .addLabeledComponent("Max lines per tab:", maxLines)
                 .addComponent(defaults)
                 .addComponentFillVertically(new JPanel(), 0)
@@ -90,6 +103,11 @@ public final class LogConsoleConfigurable implements Configurable {
         inheritBox.setSelected(s.inheritUntagged);
         errorColor.setSelectedColor(LogConsoleSettings.parseColor(s.errorColor, LogConsoleSettings.DEFAULT_ERROR_COLOR));
         warnColor.setSelectedColor(LogConsoleSettings.parseColor(s.warnColor, LogConsoleSettings.DEFAULT_WARN_COLOR));
+        debugColor.setSelectedColor(LogConsoleSettings.parseColor(s.debugColor, LogConsoleSettings.DEFAULT_DEBUG_COLOR));
+        Color other = LogConsoleSettings.parseColor(s.otherColor, null);
+        otherColorBox.setSelected(other != null);
+        otherColor.setSelectedColor(other != null ? other : UIUtil.getLabelForeground());
+        otherColor.setEnabled(other != null);
         maxLines.setNumber(s.maxLines);
     }
 
@@ -103,6 +121,9 @@ public final class LogConsoleConfigurable implements Configurable {
         s.inheritUntagged = inheritBox.isSelected();
         s.errorColor = toHex(errorColor.getSelectedColor(), LogConsoleSettings.DEFAULT_ERROR_COLOR);
         s.warnColor = toHex(warnColor.getSelectedColor(), LogConsoleSettings.DEFAULT_WARN_COLOR);
+        s.debugColor = toHex(debugColor.getSelectedColor(), LogConsoleSettings.DEFAULT_DEBUG_COLOR);
+        s.otherColor = otherColorBox.isSelected() && otherColor.getSelectedColor() != null
+                ? ColorUtil.toHex(otherColor.getSelectedColor()) : null;
         s.maxLines = maxLines.getNumber();
         return s;
     }

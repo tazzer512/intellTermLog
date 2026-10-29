@@ -17,6 +17,9 @@ final class LogClassifier {
     static final String DEFAULT_CONTINUATION =
             "^\\s+at |^\\s*\\.\\.\\. \\d+ (more|common frames omitted)|^Caused by: |^\\s+Suppressed: |^\\s*Wrapped by: ";
 
+    /** An exception's first line, as printed by a logger right below the ERROR line that logged it. */
+    private static final Pattern EXCEPTION_HEADER = Pattern.compile("^[\\w$.]*(Exception|Error)(:|$)");
+
     private final Pattern error;
     private final Pattern warn;
     private final Pattern debug;
@@ -72,6 +75,21 @@ final class LogClassifier {
         if (level != null) return level;
 
         return inheritUntagged && previous != null ? previous : LogLevel.OTHER;
+    }
+
+    /**
+     * Whether a line belongs to the log entry above it instead of starting a new one: a stack trace line, an
+     * exception printed right below the ERROR line that logged it, or (with inheritUntagged) a line without a level.
+     * Next/previous error jumps stop at entry starts, so back-to-back errors are separate stops.
+     *
+     * @param previous level of the previous output line, or null
+     */
+    boolean continuesEntry(String text, LogLevel previous) {
+        if (previous == null) return false;
+        if (continuation != null && continuation.matcher(text).find()) return true;
+        if (previous == LogLevel.ERROR && EXCEPTION_HEADER.matcher(text).find()) return true;
+        return inheritUntagged && start(error, text) < 0 && start(warn, text) < 0 && start(debug, text) < 0
+                && start(other, text) < 0;
     }
 
     private static int start(Pattern p, String text) {

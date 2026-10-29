@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Simulates two apps logging at once. Right-click > "Run 'demo.sh' in Log Console" to try the plugin.
 
+# Needs bash ($RANDOM); `sh demo.sh` runs dash on Debian/Ubuntu, where every line would be an error.
+[ -z "$BASH_VERSION" ] && exec bash "$0" "$@"
+
 app() {
   local name=$1
   for i in $(seq 1 200); do
