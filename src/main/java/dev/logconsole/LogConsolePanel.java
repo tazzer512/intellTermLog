@@ -3,7 +3,11 @@ package dev.logconsole;
 import com.intellij.execution.ExecutionException;
 import com.intellij.execution.configurations.GeneralCommandLine;
 import com.intellij.execution.configurations.PtyCommandLine;
+import com.intellij.execution.filters.CompositeFilter;
+import com.intellij.execution.filters.ConsoleFilterProvider;
+import com.intellij.execution.filters.Filter;
 import com.intellij.execution.impl.ConsoleViewUtil;
+import com.intellij.execution.impl.EditorHyperlinkSupport;
 import com.intellij.execution.process.KillableProcessHandler;
 import com.intellij.execution.process.ProcessEvent;
 import com.intellij.execution.process.ProcessListener;
@@ -44,7 +48,12 @@ import com.intellij.openapi.editor.markup.GutterIconRenderer;
 import com.intellij.openapi.editor.markup.MarkupModel;
 import com.intellij.openapi.editor.markup.RangeHighlighter;
 import com.intellij.openapi.editor.markup.TextAttributes;
+import com.intellij.openapi.fileChooser.FileChooserFactory;
+import com.intellij.openapi.fileChooser.FileSaverDescriptor;
+import com.intellij.openapi.keymap.KeymapUtil;
 import com.intellij.openapi.options.ShowSettingsUtil;
+import com.intellij.openapi.vfs.LocalFileSystem;
+import com.intellij.openapi.vfs.VirtualFileWrapper;
 import com.intellij.openapi.project.DumbAwareAction;
 import com.intellij.openapi.project.DumbAwareToggleAction;
 import com.intellij.openapi.project.Project;
@@ -115,6 +124,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
@@ -245,6 +256,13 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
     private String commandAfterIdle;
     private volatile boolean disposed;
 
+    /** Stack-trace (and other) links, found by the same console filters as the IDE's Run console. */
+    private EditorHyperlinkSupport hyperlinks;
+    /** Built on first use; null again makes the next batch pick up newly installed filter providers. */
+    Filter linkFilter;
+    /** Bumped when the document is rebuilt, so link searches still running for the old text are dropped. */
+    private int linkGeneration;
+
     private int completionId;
     private Completion pendingCompletion;
 
@@ -260,6 +278,7 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         editor = (EditorEx) EditorFactory.getInstance().createViewer(document, project, EditorKind.CONSOLE);
         ConsoleViewUtil.setupConsoleEditor(editor, false, true);
         editor.getSettings().setUseSoftWraps(false);
+        hyperlinks = EditorHyperlinkSupport.get(editor);
         refreshAttributes();
 
         List<String> saved = PropertiesComponent.getInstance().getList(HISTORY_KEY);
@@ -385,13 +404,14 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         matchLabel.setForeground(JBColor.GRAY);
         options.add(matchLabel);
         options.add(navigationButtons("Match", () -> jumpToMatch(false), () -> jumpToMatch(true),
-                () -> !matchStarts.isEmpty()));
+                () -> !matchStarts.isEmpty(), IdeActions.ACTION_FIND_PREVIOUS, IdeActions.ACTION_FIND_NEXT));
         for (JComponent c : List.of(regexBox, caseBox, excludeBox, new JBLabel("|"))) {
             options.add(c);
         }
-        options.add(withNavigation(errorBox, LogLevel.ERROR, "Error", () -> errorCount));
-        options.add(withNavigation(warnBox, LogLevel.WARN, "Warning", () -> warnCount));
-        options.add(withNavigation(debugBox, LogLevel.DEBUG, "Debug Line", () -> debugCount));
+        options.add(withNavigation(errorBox, LogLevel.ERROR, "Error", () -> errorCount,
+                "GotoPreviousError", "GotoNextError"));
+        options.add(withNavigation(warnBox, LogLevel.WARN, "Warning", () -> warnCount, null, null));
+        options.add(withNavigation(debugBox, LogLevel.DEBUG, "Debug Line", () -> debugCount, null, null));
         options.add(otherBox);
         filterRow.add(options, BorderLayout.EAST);
 
@@ -427,9 +447,10 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
     }
 
     /** A level checkbox followed by previous/next buttons that jump between that level's lines. */
-    private JComponent withNavigation(JBCheckBox box, LogLevel level, String name, java.util.function.IntSupplier count) {
+    private JComponent withNavigation(JBCheckBox box, LogLevel level, String name, java.util.function.IntSupplier count,
+                                      String previousShortcut, String nextShortcut) {
         JComponent buttons = navigationButtons(name, () -> jumpTo(level, false), () -> jumpTo(level, true),
-                () -> count.getAsInt() > 0 && box.isSelected());
+                () -> count.getAsInt() > 0 && box.isSelected(), previousShortcut, nextShortcut);
         JPanel panel = new JPanel(new BorderLayout());
         panel.setOpaque(false);
         panel.add(box, BorderLayout.WEST);
@@ -437,13 +458,21 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         return panel;
     }
 
-    /** Compact previous/next buttons, as in the IDE's Find bar. */
-    private JComponent navigationButtons(String name, Runnable previous, Runnable next, BooleanSupplier enabled) {
+    /**
+     * Compact previous/next buttons, as in the IDE's Find bar. The shortcut ids name IDE actions (e.g. Next Highlighted
+     * Error, F2) whose keymap shortcuts also trigger the buttons while the focus is anywhere in this tab.
+     */
+    private JComponent navigationButtons(String name, Runnable previous, Runnable next, BooleanSupplier enabled,
+                                         String previousShortcut, String nextShortcut) {
         DefaultActionGroup group = new DefaultActionGroup();
-        group.add(action("Previous " + name, "Jump to the previous " + name.toLowerCase(), AllIcons.Actions.PreviousOccurence,
-                previous, enabled));
-        group.add(action("Next " + name, "Jump to the next " + name.toLowerCase(), AllIcons.Actions.NextOccurence,
-                next, enabled));
+        AnAction previousAction = action("Previous " + name, "Jump to the previous " + name.toLowerCase(),
+                AllIcons.Actions.PreviousOccurence, previous, enabled);
+        AnAction nextAction = action("Next " + name, "Jump to the next " + name.toLowerCase(),
+                AllIcons.Actions.NextOccurence, next, enabled);
+        if (previousShortcut != null) previousAction.registerCustomShortcutSet(KeymapUtil.getActiveKeymapShortcuts(previousShortcut), this);
+        if (nextShortcut != null) nextAction.registerCustomShortcutSet(KeymapUtil.getActiveKeymapShortcuts(nextShortcut), this);
+        group.add(previousAction);
+        group.add(nextAction);
         ActionToolbar toolbar = ActionManager.getInstance().createActionToolbar("LogConsoleNavigation", group, true);
         toolbar.setTargetComponent(this);
         toolbar.setReservePlaceAutoPopupIcon(false);
@@ -525,6 +554,8 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
                 return ActionUpdateThread.EDT;
             }
         });
+        group.add(action("Save Output…", "Save the output to a file (all lines, or only the lines the filter shows)",
+                AllIcons.Actions.MenuSaveall, this::saveOutput, () -> !lines.isEmpty()));
         group.add(action("Clear (Ctrl+L)", "Clear all output", AllIcons.Actions.GC, this::clear, () -> !lines.isEmpty()));
         group.addSeparator();
         group.add(action("Log Console Settings…", "Configure the colors and patterns per log level",
@@ -1119,7 +1150,26 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
             if (line.kind == LogLine.Kind.OUTPUT) outputShown++;
         }
         highlight(toShow, base, firstLine);
+        findLinks(firstLine, visibleLines.size() - 1);
         if (scrollToEnd) scrollToEnd();
+    }
+
+    /** Runs the console filters (in the background, like the Run console) over the given document lines. */
+    private void findLinks(int startLine, int endLine) {
+        if (linkFilter == null) {
+            List<Filter> filters = new ArrayList<>();
+            for (ConsoleFilterProvider provider : ConsoleFilterProvider.FILTER_PROVIDERS.getExtensionList()) {
+                filters.addAll(List.of(provider.getDefaultFilters(project)));
+            }
+            linkFilter = new CompositeFilter(project, filters);
+        }
+        int generation = linkGeneration;
+        hyperlinks.highlightHyperlinksLater(linkFilter, startLine, endLine,
+                () -> disposed || generation != linkGeneration);
+    }
+
+    void waitForLinks() {
+        hyperlinks.waitForPendingFilters(5_000);
     }
 
     private void highlight(List<LogLine> shown, int offset, int docLine) {
@@ -1172,6 +1222,8 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
     }
 
     private void rebuild() {
+        linkGeneration++;
+        hyperlinks.clearHyperlinks();
         editor.getMarkupModel().removeAllHighlighters();
         clearMatches();
         bookmarkHighlighters.clear();
@@ -1211,11 +1263,47 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         outputShown = 0;
         bookmarks.removeAll();
         bookmarkHighlighters.clear();
+        linkGeneration++;
+        hyperlinks.clearHyperlinks();
         editor.getMarkupModel().removeAllHighlighters();
         clearMatches();
         navLevel = null;
         document.setText("");
         updateStatus();
+    }
+
+    private void saveOutput() {
+        boolean all = true;
+        if (visibleLines.size() != lines.size()) {
+            int choice = Messages.showDialog(project,
+                    String.format("Save all %,d lines, or only the %,d lines the filter shows?", lines.size(), visibleLines.size()),
+                    "Save Output", new String[]{"All Lines", "Shown Lines", "Cancel"}, 1, Messages.getQuestionIcon());
+            if (choice == 2 || choice < 0) return;
+            all = choice == 0;
+        }
+        String name = (lastCommand == null ? "shell" : ShellText.tabTitle(lastCommand).replaceAll("[^\\w.-]+", "_"))
+                + "-" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd_HHmmss")) + ".log";
+        VirtualFileWrapper target = FileChooserFactory.getInstance()
+                .createSaveFileDialog(new FileSaverDescriptor("Save Output", "Save the Log Console output"), project)
+                .save(LocalFileSystem.getInstance().findFileByPath(cwd), name);
+        if (target == null) return;
+        String text = outputText(all);
+        Path file = target.getFile().toPath();
+        AppExecutorUtil.getAppExecutorService().execute(() -> {
+            try {
+                Files.writeString(file, text, StandardCharsets.UTF_8);
+            } catch (IOException e) {
+                ApplicationManager.getApplication().invokeLater(() ->
+                        Messages.showErrorDialog(project, "Could not save " + file + ": " + e.getMessage(), "Save Output"));
+            }
+        });
+    }
+
+    /** The output as text, one line per log line: every line in this tab, or only those the filter shows. */
+    String outputText(boolean all) {
+        StringBuilder text = new StringBuilder();
+        for (LogLine line : all ? lines : visibleLines) text.append(line.text).append('\n');
+        return text.toString();
     }
 
     private void scrollToEnd() {

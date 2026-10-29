@@ -5,6 +5,7 @@ import com.intellij.testFramework.PlatformTestUtil;
 import com.intellij.testFramework.fixtures.BasePlatformTestCase;
 
 import java.nio.file.Path;
+import java.util.List;
 
 /** Drives a real panel (and its editor) the way the toolbar buttons do. */
 public class LogConsolePanelTest extends BasePlatformTestCase {
@@ -218,5 +219,85 @@ public class LogConsolePanelTest extends BasePlatformTestCase {
         assertFalse(java.util.Arrays.stream(panel.editor.getMarkupModel().getAllHighlighters())
                 .anyMatch(h -> h.getStartOffset() <= info && h.getEndOffset() > info
                         && h.getTextAttributes(null) != null && h.getTextAttributes(null).getForegroundColor() != null));
+    }
+
+    /** A console filter like the Java stack-trace one: links every "(Foo.java:12)". */
+    private static final com.intellij.execution.filters.Filter SOURCE_LINKS = (line, entireLength) -> {
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("\\(\\w+\\.java:\\d+\\)").matcher(line);
+        if (!m.find()) return null;
+        int lineStart = entireLength - line.length();
+        return new com.intellij.execution.filters.Filter.Result(lineStart + m.start() + 1, lineStart + m.end() - 1,
+                project -> { });
+    };
+
+    private List<String> linkTexts() {
+        panel.waitForLinks();
+        PlatformTestUtil.dispatchAllEventsInIdeEventQueue();
+        com.intellij.execution.impl.EditorHyperlinkSupport links =
+                com.intellij.execution.impl.EditorHyperlinkSupport.get(panel.editor);
+        String text = panel.editor.getDocument().getText();
+        return links.getAllHyperlinks(0, text.length()).stream()
+                .map(h -> text.substring(h.getStartOffset(), h.getEndOffset())).sorted().toList();
+    }
+
+    public void testStackTraceLinksFromConsoleFilters() {
+        com.intellij.execution.filters.ConsoleFilterProvider.FILTER_PROVIDERS.getPoint().registerExtension(
+                project -> new com.intellij.execution.filters.Filter[]{SOURCE_LINKS}, getTestRootDisposable());
+        panel.linkFilter = null;
+        output("10:00:00 ERROR boom", "java.lang.IllegalStateException: bad",
+                "\tat dev.App.run(App.java:12)", "\tat dev.Main.main(Main.java:3)", "10:00:01 INFO ok");
+        assertEquals(List.of("App.java:12", "Main.java:3"), linkTexts());
+
+        // The filter rebuilds the document; links are found again at the new offsets.
+        filter("Main");
+        assertEquals(List.of("Main.java:3"), linkTexts());
+        filter("");
+        assertEquals(List.of("App.java:12", "Main.java:3"), linkTexts());
+    }
+
+    public void testOutputTextIsAllLinesOrTheShownLines() {
+        output("10:00:00 INFO one", "10:00:01 ERROR two", "10:00:02 INFO three");
+        assertTrue(panel.outputText(true).endsWith("10:00:00 INFO one\n10:00:01 ERROR two\n10:00:02 INFO three\n"));
+        filter("ERROR");
+        assertEquals("10:00:01 ERROR two\n", panel.outputText(false));
+        assertTrue(panel.outputText(true).contains("10:00:00 INFO one\n"));
+    }
+
+    public void testSettingsPageRoundTripsColors() throws Exception {
+        LogConsoleSettings.State saved = LogConsoleSettings.getInstance().getState();
+        try {
+            LogConsoleSettings.State custom = new LogConsoleSettings.State();
+            custom.debugColor = "112233";
+            custom.otherColor = "445566";
+            LogConsoleSettings.getInstance().update(custom);
+            LogConsoleConfigurable page = new LogConsoleConfigurable();
+            assertNotNull(page.createComponent());
+            assertFalse(page.isModified());
+            page.apply();
+            assertEquals("112233", LogConsoleSettings.getInstance().getState().debugColor);
+            assertEquals("445566", LogConsoleSettings.getInstance().getState().otherColor);
+
+            // Restore Defaults: debug back to the theme green, no custom color for other lines.
+            LogConsoleSettings.getInstance().update(new LogConsoleSettings.State());
+            page.reset();
+            page.apply();
+            assertNull(LogConsoleSettings.getInstance().getState().debugColor);
+            assertNull(LogConsoleSettings.getInstance().getState().otherColor);
+            page.disposeUIResources();
+        } finally {
+            LogConsoleSettings.getInstance().update(saved);
+        }
+    }
+
+    public void testErrorAndMatchNavigationUseTheIdeShortcuts() {
+        java.util.Map<String, String> shortcuts = new java.util.HashMap<>();
+        for (com.intellij.openapi.actionSystem.AnAction action : com.intellij.openapi.actionSystem.ex.ActionUtil.getActions(panel)) {
+            shortcuts.put(action.getTemplateText(),
+                    com.intellij.openapi.keymap.KeymapUtil.getFirstKeyboardShortcutText(action.getShortcutSet()));
+        }
+        assertEquals("F2", shortcuts.get("Next Error"));
+        assertEquals("Shift+F2", shortcuts.get("Previous Error"));
+        assertEquals("F3", shortcuts.get("Next Match"));
+        assertEquals("Shift+F3", shortcuts.get("Previous Match"));
     }
 }

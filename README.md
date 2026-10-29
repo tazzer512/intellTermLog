@@ -1,7 +1,8 @@
 # Log Console – IntelliJ IDEA plugin
 
 A **Log Console** tool window: a bash session where you type or paste commands (e.g. `sh run-all.sh`
-that starts stubs + apps), with the output colored and filterable:
+that starts stubs + apps), with the output colored and filterable. Linux and macOS only: it needs bash, and
+Stop/Kill find processes via `/proc` (Linux) — on Windows the shell does not start.
 
 - **Command box** at the bottom (drag the divider to resize it): Enter runs, Shift+Enter adds a line,
   pasted multi-line text runs line by line, Tab completes, ↑/↓ history, Ctrl+C interrupts, Ctrl+L clears.
@@ -19,10 +20,13 @@ that starts stubs + apps), with the output colored and filterable:
   error, warning or debug entry, which gets selected and marked with a yellow box, wrapping around. While
   stepping, the toggle shows where you are, e.g. *Errors (3/12)*. Counts and jumps are per entry: a stack trace
   (and an exception printed right below its ERROR line) belongs to its entry, and back-to-back errors are
-  separate entries. A jump pauses scrolling.
+  separate entries. A jump pauses scrolling. Keyboard: F2 / Shift+F2 for next/previous error (your keymap's
+  *Next/Previous Highlighted Error*) while the focus is in the tab.
 - Next to the filter field: the line counter (*Lines: 1,234*, or *Lines: 120 of 1,234* while filtering) and,
   for an include filter, the match counter (*3/17*) with ▲/▼ to step through the matches like the IDE's
-  Find bar. Enter / Shift+Enter in the filter field go to the next / previous match.
+  Find bar. Enter / Shift+Enter in the filter field go to the next / previous match; F3 / Shift+F3 anywhere in the tab.
+- **Clickable stack traces**: `at com.foo.Bar.baz(Bar.java:42)` links to the source, like in the Run console
+  (the same console filters; links to classes in the open project).
 - The ▲/▼ arrows in the left toolbar scroll up/down one page (and pause scrolling).
 - **Pause Scrolling** toggle keeps the view still while output arrives; *Scroll to the Top* shows the first
   line (and pauses), *Scroll to the End* shows the last line and follows new output again. Soft-wrap, clear.
@@ -30,6 +34,7 @@ that starts stubs + apps), with the output colored and filterable:
   F11 / Shift+F11). The **Bookmarks** box on the right lists them; click one to jump to it, double-click
   to jump even when the filter hides it (the filter is cleared). Buttons: add at caret, remove, edit note,
   previous/next, copy bookmarked lines, remove all. The bookmark icon in the toolbar shows/hides the box.
+- **Save Output…** (toolbar) writes the output to a file; with a filter active it asks: all lines or the shown ones.
 - Multiple tabs (`+` in the tool window title); one tab per script.
 - **Stop** ends everything started from the tab but keeps the shell (and your `cd`/exports): the running
   command, background jobs and apps a script left running, even when it ended without `wait` or an app

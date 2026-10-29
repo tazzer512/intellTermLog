@@ -57,6 +57,10 @@ methods it needs are package-private.
   clear it. The caret normally sits on the empty line after the output, so jumps treat that line specially.
 - Filter matches are recorded as document offsets (`matchStarts`/`matchEnds`) while highlighting, so match
   navigation and the 3/17 counter need no rescans; `rebuild()` resets them.
+- Links (stack traces etc.) come from the platform's `consoleFilterProvider` extensions (the Java plugin's
+  `DefaultConsoleFiltersProvider` gives `ExceptionFilter`), so there is no hard dependency on the Java plugin.
+  `EditorHyperlinkSupport.highlightHyperlinksLater` runs them per appended batch; `rebuild()`/`clear()` bump
+  `linkGeneration` so searches over the old text expire.
 - `samples/demo.sh` must run under bash (`$RANDOM`); it re-execs itself with bash when started via `sh`.
 
 ## Conventions
