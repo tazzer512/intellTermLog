@@ -13,6 +13,9 @@ User-facing behavior is described in `README.md`; keep it in sync when behavior 
 ./gradlew runIde        # sandbox IDE with the plugin, opens samples/ (right-click demo.sh -> Run in Log Console)
 ```
 
+The plugin version is computed in `build.gradle.kts`: `1.0.<git commit count>`, so each commit pushed to main is
+a new version. Don't hard-code it; bump the `1.0` prefix for bigger releases. CI checks out with `fetch-depth: 0`.
+
 Compiler runs with `-Xlint:deprecation -Xlint:removal`; keep the build free of warnings.
 
 Restarting a running sandbox IDE: find it with `pgrep -f "[i]dea-2026.1.5/jbr/bin/java"` and kill those

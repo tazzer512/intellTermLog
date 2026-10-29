@@ -59,7 +59,8 @@ Stop/Kill find processes via `/proc` (Linux) — on Windows the shell does not s
 ```
 
 Then in IntelliJ: *Settings → Plugins → ⚙ → Install Plugin from Disk…* →
-`build/distributions/log-console-1.0.0.zip`. Requires IntelliJ IDEA 2026.1 or newer.
+`build/distributions/log-console-<version>.zip`. Requires IntelliJ IDEA 2026.1 or newer.
+The version is `1.0.<number of commits>`, so every push to main gets a new one (and IntelliJ sees it as an update).
 
 To try it in a sandbox IDE without touching your own: `./gradlew runIde`, then right-click
 `samples/demo.sh` → *Run 'demo.sh' in Log Console*.
