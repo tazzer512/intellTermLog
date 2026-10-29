@@ -41,8 +41,10 @@ prompt marker can arrive before the 50 ms output flush, so they flush after the 
 ## How the shell session works (don't break these invariants)
 
 - bash runs on a PTY (`PtyCommandLine`, `bash --noediting -i`, `TERM=dumb`) with echo off and empty
-  `PS1`/`PS2`. `PROMPT_COMMAND` prints `\036LCPWD:<cwd>`: that marker means "idle again" and updates the cwd.
-  Output before the first marker (bashrc noise) is dropped.
+  `PS1`/`PS2`. `PROMPT_COMMAND` prints `\036LCPWD:<nonce>:<cwd>`: that marker means "idle again" and updates the
+  cwd. The nonce is random per shell (`ShellOutputParser.newNonce`) so program output can't forge the marker; the
+  completion marker `\036LCDONE:<nonce>:<id>` carries it too. Output before the first marker (bashrc noise) is
+  dropped; other control characters (except tab) are stripped from output lines.
 - Commands we inject (init line, completion requests) start with a space so they stay out of bash history.
 - Tab completion while idle writes ` __lc_complete '<line>' >'<file>'; printf '\036LCDONE:<id>\n'` to the
   shell and reads the file when the marker arrives; while busy it falls back to `ShellText.fileCompletions`.
@@ -52,7 +54,7 @@ prompt marker can arrive before the 50 ms output flush, so they flush after the 
   `ShellProcesses.startedFrom` (shell excluded), SIGKILL after 10s; Kill also includes the shell (5s). The shell
   itself gets SIGHUP (`ShellProcesses.hangUp`): an interactive bash ignores SIGTERM.
   pty4j's `Process` does not support `toHandle()`; use `ProcessHandle.of(process.pid())`.
-- Ctrl+click on Kill also SIGTERMs `ShellProcesses.javaProcesses()` (like `pkill -f java`, minus this JVM and its
+- Ctrl+click on Kill also SIGTERMs `ShellProcesses.javaProcesses()` (like `pkill -f java`: this user's processes only, minus this JVM and its
   ancestors, e.g. the Gradle daemon under `runIde`), after `confirmKillJava`. Tests replace both `javaProcesses`
   and `confirmKillJava`; never let a test confirm against the real list, it would SIGTERM every Java app on the machine.
 - Output is queued off-EDT (`pending`, capped at `MAX_PENDING`) and flushed in 50 ms batches on the EDT.
@@ -61,7 +63,9 @@ prompt marker can arrive before the 50 ms output flush, so they flush after the 
 - `scrollToEnd` = follow new output (the Pause Scrolling toggle is its inverse). Jumps and Scroll to the Top
   clear it. The caret normally sits on the empty line after the output, so jumps treat that line specially.
 - Filter matches are recorded as document offsets (`matchStarts`/`matchEnds`) while highlighting, so match
-  navigation and the 3/17 counter need no rescans; `rebuild()` resets them.
+  navigation and the 3/17 counter need no rescans; `rebuild()` resets them. Only the newest
+  `MAX_MATCH_HIGHLIGHTS` are painted (one highlighter per match would stall the EDT on big logs).
+- Text from the output never reaches Swing as HTML: tooltips escape it, the prompt label has `html.disable`.
 - Links (stack traces etc.) come from the platform's `consoleFilterProvider` extensions (the Java plugin's
   `DefaultConsoleFiltersProvider` gives `ExceptionFilter`), so there is no hard dependency on the Java plugin.
   `EditorHyperlinkSupport.highlightHyperlinksLater` runs them per appended batch; `rebuild()`/`clear()` bump

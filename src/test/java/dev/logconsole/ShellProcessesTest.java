@@ -134,6 +134,27 @@ class ShellProcessesTest {
         }
     }
 
+    /** Other users' processes are out of reach anyway (no permission without root) and none of our business. */
+    @Test
+    @EnabledOnOs(OS.LINUX)
+    void javaProcessesAreOnlyThoseOfThisUser() {
+        String me = ProcessHandle.current().info().user().orElseThrow();
+        for (ProcessHandle p : ShellProcesses.javaProcesses()) {
+            assertEquals(me, p.info().user().orElse("?"), "pid " + p.pid());
+        }
+    }
+
+    @Test
+    @EnabledOnOs(OS.LINUX)
+    void ownedByComparesTheProcessOwner() {
+        String me = ProcessHandle.current().info().user().orElseThrow();
+        assertTrue(ShellProcesses.ownedBy(ProcessHandle.current(), me));
+        assertFalse(ShellProcesses.ownedBy(ProcessHandle.current(), me + "-someone-else"));
+        ProcessHandle init = ProcessHandle.of(1).orElseThrow(); // owned by root
+        org.junit.jupiter.api.Assumptions.assumeFalse("root".equals(me));
+        assertFalse(ShellProcesses.ownedBy(init, me));
+    }
+
     @Test
     @EnabledOnOs(OS.LINUX)
     void hangUpEndsAnInteractiveBashThatIgnoresSigterm() throws Exception {

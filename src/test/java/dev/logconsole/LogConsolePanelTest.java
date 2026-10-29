@@ -827,6 +827,7 @@ public class LogConsolePanelTest extends BasePlatformTestCase {
             return false;
         };
         panel.kill(true);
+        waitUntil("the confirmation", () -> !asked.isEmpty());
         PlatformTestUtil.dispatchAllEventsInIdeEventQueue();
         assertEquals(List.of(List.of(javaApp.toHandle())), asked);
         assertTrue(javaApp.isAlive());
@@ -849,5 +850,120 @@ public class LogConsolePanelTest extends BasePlatformTestCase {
     public void testRealJavaProcessListNeverIncludesThisIde() {
         List<Long> pids = ShellProcesses.javaProcesses().stream().map(ProcessHandle::pid).toList();
         assertFalse(pids.contains(ProcessHandle.current().pid()));
+    }
+    // ---------------------------------------------------------------- review findings
+
+    /** #1: output that prints the marker must not end the command early or change the working directory. */
+    public void testProgramOutputCannotForgeTheIdleMarker() {
+        run("true");
+        String cwd = panel.cwd;
+        panel.runCommand("printf 'before\\n\\036LCPWD:/forged\\n'; sleep 300");
+        waitForSleep();
+        waitUntil("the output", () -> {
+            panel.flush();
+            return shownOutput().contains("before");
+        });
+        PlatformTestUtil.dispatchAllEventsInIdeEventQueue();
+        assertTrue("still running", panel.busy);
+        assertEquals(cwd, panel.cwd);
+        panel.stopAll();
+        waitForIdle();
+    }
+
+    /** #2: a log line is shown as text in the bookmark tooltip, never rendered as HTML (which can load URLs). */
+    public void testBookmarkTooltipDoesNotRenderLogLinesAsHtml() {
+        output("<html><img src='http://example.invalid/x.png'>");
+        LogLine line = panel.visibleLines.get(0);
+        panel.toggleBookmark(line);
+        JComponent cell = (JComponent) panel.bookmarkList.getCellRenderer()
+                .getListCellRendererComponent(panel.bookmarkList, line, 0, false, false);
+        String tip = cell.getToolTipText();
+        assertNotNull(tip);
+        assertFalse(tip, tip.contains("<img"));
+        assertTrue(tip, tip.contains("&lt;img"));
+    }
+
+    /** #3: a file name with a newline would put a second command line into the command box. */
+    public void testCompletionSkipsNamesWithControlCharacters() throws Exception {
+        Path dir = Files.createTempDirectory("log-console-test");
+        try {
+            Files.createFile(dir.resolve("evil\nreboot"));
+            run("cd " + ShellText.shellQuote(dir.toString()));
+            panel.runCommand("sleep 300");
+            waitForSleep();
+            panel.input.setText("cat ev");
+            panel.input.setCaretPosition(panel.input.getText().length());
+            panel.complete();
+            assertEquals("cat ev", panel.input.getText());
+            panel.stopAll();
+            waitForIdle();
+        } finally {
+            FileUtil.delete(dir.toFile());
+        }
+    }
+
+    /** #4: the confirmation names each process (pid and command line), not just "java, java". */
+    public void testKillJavaConfirmationListsTheCommandLines() throws Exception {
+        Process app = new ProcessBuilder("bash", "-c", "sleep 412; : java -jar my-app.jar").start();
+        started.add(app);
+        String message = LogConsolePanel.killJavaMessage(List.of(app.toHandle()));
+        assertTrue(message, message.contains(String.valueOf(app.pid())));
+        assertTrue(message, message.contains("java -jar my-app.jar"));
+
+        List<ProcessHandle> many = java.util.Collections.nCopies(30, app.toHandle());
+        String capped = LogConsolePanel.killJavaMessage(many);
+        assertTrue(capped, capped.contains("… and 10 more"));
+    }
+
+    /** #5: Run while bash waits in a builtin (nothing to SIGTERM) must still run the new command. */
+    public void testRunWhileAShellBuiltinWaitsStillRuns() {
+        run("true");
+        panel.runCommand("read lc_test_answer");
+        waitUntil("read to start", () -> panel.busy);
+        panel.runCommand("echo after-read");
+        waitUntil("the new command", () -> {
+            panel.flush();
+            return shownOutput().contains("after-read");
+        });
+    }
+
+    /** #6: Ctrl+L also drops output that arrived but was not shown yet. */
+    public void testClearDropsQueuedOutput() {
+        output("shown");
+        panel.enqueue(new LogLine("queued before the clear", LogLine.Kind.OUTPUT));
+        panel.clear();
+        panel.flush();
+        assertEquals(List.of(), shownOutput());
+        assertEquals("Lines: 0", panel.lineCountLabel.getText());
+    }
+
+    /** #9: a filter matching everywhere must not create a highlighter per match; counting and stepping still see all. */
+    public void testManyMatchesAreCountedButOnlySomeArePainted() {
+        String[] lines = new String[30_000];
+        Arrays.fill(lines, "e e e e e");
+        output(lines);
+        filter("e");
+        assertEquals("150,000 matches", panel.matchLabel.getText());
+        long highlighters = panel.editor.getMarkupModel().getAllHighlighters().length;
+        assertTrue(highlighters + " highlighters", highlighters <= LogConsolePanel.MAX_MATCH_HIGHLIGHTS + 1_000);
+
+        panel.scrollToEndAndFollow();
+        panel.jumpToMatch(false);
+        assertEquals("150,000/150,000", panel.matchLabel.getText());
+        assertEquals("e", selected());
+    }
+
+    /** #10: listing every process's command line from /proc must not block the UI thread. */
+    public void testCtrlClickKillScansProcessesOffTheUiThread() {
+        run("true");
+        List<Boolean> onUiThread = new ArrayList<>();
+        panel.javaProcesses = () -> {
+            onUiThread.add(com.intellij.openapi.application.ApplicationManager.getApplication().isDispatchThread());
+            return List.of();
+        };
+        panel.kill(true);
+        waitUntil("the scan", () -> !onUiThread.isEmpty());
+        assertEquals(List.of(false), onUiThread);
+        waitUntil("a new shell", () -> panel.shell != null && panel.shellReady);
     }
 }

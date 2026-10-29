@@ -152,15 +152,14 @@ import java.util.regex.PatternSyntaxException;
  * and appended to the editor in batches on the EDT. All other state is EDT-only unless marked volatile.
  */
 public final class LogConsolePanel extends SimpleToolWindowPanel implements Disposable {
-    /** Leading space keeps it out of the bash history (HISTCONTROL=ignorespace/ignoreboth). */
-    private static final String SHELL_INIT = " stty -echo 2>/dev/null; PS1=''; PS2=''; unset PROMPT_COMMAND; "
-            + "PROMPT_COMMAND='printf \"\\036LCPWD:%s\\n\" \"$PWD\"'\n";
     private static final int MAX_COMPLETIONS = 1_000;
     /**
      * Lines waiting for the EDT. A flood of output (e.g. 'yes') must not fill the heap while the EDT is busy;
      * more than this and the oldest waiting lines are dropped, which trimming would do anyway.
      */
     private static final int MAX_PENDING = 200_000;
+    /** Filter matches painted at most; more are still counted and stepped through (each highlighter costs the EDT). */
+    static final int MAX_MATCH_HIGHLIGHTS = 10_000;
     private static volatile Path completionScript;
     private static final String HOME = System.getProperty("user.home");
     private static final String HISTORY_KEY = "logConsole.history";
@@ -213,6 +212,8 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
     /** Document ranges of the filter matches, in document order (only filled in include mode). */
     private final IntArrayList matchStarts = new IntArrayList();
     private final IntArrayList matchEnds = new IntArrayList();
+    /** The painted matches, oldest first; at most {@link #MAX_MATCH_HIGHLIGHTS}. */
+    private final java.util.ArrayDeque<RangeHighlighter> matchHighlighters = new java.util.ArrayDeque<>();
     /** 1-based index of the match the last match jump selected; 0 when none. */
     private int currentMatch;
     /** Set while several filter controls change at once, so they rebuild the output only once. */
@@ -250,6 +251,8 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
     volatile KillableProcessHandler shell;
     /** Value of {@link ShellProcesses#TAG_VARIABLE} in the current shell's environment. */
     private volatile String shellTag;
+    /** The secret in the current shell's prompt/completion markers, see {@link ShellOutputParser}. */
+    private String shellNonce;
     boolean shellReady;
     private long shellStartedAt;
     private boolean restartShellOnExit;
@@ -435,6 +438,7 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         filterRow.add(options, BorderLayout.EAST);
 
         promptLabel.setBorder(JBUI.Borders.empty(3, 6, 2, 6));
+        promptLabel.putClientProperty("html.disable", Boolean.TRUE); // shows the directory and command as typed
         promptLabel.setFont(input.getFont().deriveFont(Font.BOLD));
         JBScrollPane inputScroll = new JBScrollPane(input);
         inputScroll.setBorder(JBUI.Borders.empty());
@@ -509,8 +513,8 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
                 "SIGTERM the running command and everything started from this tab (also background apps); SIGKILL after "
                         + STOP_TIMEOUT_SECONDS + "s; the shell keeps running", AllIcons.Actions.Suspend, this::stopAll, () -> shell != null));
         group.add(new DumbAwareAction("Kill Shell and All Processes",
-                "Kill the shell and everything started from it, then open a fresh shell. Ctrl+click: also SIGTERM every "
-                        + "Java process (like pkill -f java), except this IDE", AllIcons.Debugger.KillProcess) {
+                "Kill the shell and everything started from it, then open a fresh shell. Ctrl+click: also SIGTERM all your "
+                        + "Java processes (like pkill -f java), except this IDE", AllIcons.Debugger.KillProcess) {
             @Override
             public void actionPerformed(@NotNull AnActionEvent e) {
                 kill(isCtrlClick(e.getInputEvent()));
@@ -759,6 +763,7 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         commandLine.withEnvironment("GIT_PAGER", "cat");
         String tag = ShellProcesses.newTag();
         commandLine.withEnvironment(ShellProcesses.TAG_VARIABLE, tag);
+        String nonce = ShellOutputParser.newNonce();
         try {
             KillableProcessHandler handler = new KillableProcessHandler(commandLine) {
                 @Override
@@ -766,15 +771,16 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
                     return BaseOutputReader.Options.forMostlySilentProcess();
                 }
             };
-            handler.addProcessListener(new ShellListener(handler));
+            handler.addProcessListener(new ShellListener(handler, nonce));
             shell = handler;
             shellTag = tag;
+            shellNonce = nonce;
             shellReady = false;
             busy = false;
             shellStartedAt = System.currentTimeMillis();
             cwd = dir;
             handler.startNotify();
-            writeRaw(handler, shellInit());
+            writeRaw(handler, shellInit(nonce));
         } catch (ExecutionException ex) {
             addSystemLine("Could not start bash: " + ex.getMessage());
         }
@@ -782,11 +788,17 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         updateTab();
     }
 
-    private static String shellInit() {
+    /**
+     * Switches off echo and the prompt and sets the PROMPT_COMMAND that prints the idle marker with this shell's
+     * nonce. A leading space keeps it out of the bash history (HISTCONTROL=ignorespace/ignoreboth).
+     */
+    private static String shellInit(String nonce) {
+        String init = " stty -echo 2>/dev/null; PS1=''; PS2=''; unset PROMPT_COMMAND; "
+                + "PROMPT_COMMAND='printf \"\\036LCPWD:" + nonce + ":%s\\n\" \"$PWD\"'\n";
         try {
-            return " source " + ShellText.shellQuote(completionScript().toString()) + " 2>/dev/null;" + SHELL_INIT;
+            return " source " + ShellText.shellQuote(completionScript().toString()) + " 2>/dev/null;" + init;
         } catch (IOException e) {
-            return SHELL_INIT;
+            return init;
         }
     }
 
@@ -868,7 +880,16 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         AppExecutorUtil.getAppExecutorService().execute(() -> {
             List<ProcessHandle> processes = ShellProcesses.startedFrom(shellProcess, tag);
             if (processes.isEmpty()) {
-                addSystemLine("Nothing is running.");
+                // bash itself may be busy, e.g. in `read`: no process to signal, but Ctrl+C ends it (and lets a
+                // command waiting in commandAfterIdle run).
+                ApplicationManager.getApplication().invokeLater(() -> {
+                    if (busy && shell == handler) {
+                        addSystemLine("Nothing to stop: interrupting the shell (Ctrl+C).");
+                        interrupt();
+                    } else {
+                        addSystemLine("Nothing is running.");
+                    }
+                }, ModalityState.any());
                 return;
             }
             addSystemLine("Stopping " + ShellProcesses.describe(processes) + " (SIGTERM)…");
@@ -883,13 +904,12 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
     }
 
     /**
-     * Ctrl+click on Kill: SIGTERM to every Java process like {@code pkill -f java}, after a confirmation since that
-     * also hits apps outside this tab (other IDEs and Gradle daemons, too). Returns false when cancelled.
+     * Ctrl+click on Kill: SIGTERM to all of this user's Java processes like {@code pkill -f java}, after a confirmation
+     * since that also hits apps outside this tab (other IDEs and Gradle daemons, too). Returns false when cancelled.
      */
-    boolean killJavaProcesses() {
-        List<ProcessHandle> processes = javaProcesses.get();
+    boolean killJavaProcesses(List<ProcessHandle> processes) {
         if (processes.isEmpty()) {
-            addSystemLine("No Java processes running (this IDE excluded).");
+            addSystemLine("No Java processes of yours running (this IDE excluded).");
             return true;
         }
         if (!confirmKillJava.test(processes)) return false;
@@ -898,23 +918,45 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         return true;
     }
 
-    /** The processes {@link #killJavaProcesses()} signals; tests replace it so they never touch real Java apps. */
+    /** The processes {@link #killJavaProcesses} signals; tests replace it so they never touch real Java apps. */
     java.util.function.Supplier<List<ProcessHandle>> javaProcesses = ShellProcesses::javaProcesses;
 
-    /** Asks before {@link #killJavaProcesses()} signals anything; tests replace it. */
+    /** Asks before {@link #killJavaProcesses} signals anything; tests replace it. */
     java.util.function.Predicate<List<ProcessHandle>> confirmKillJava = this::askToKillJava;
 
     private boolean askToKillJava(List<ProcessHandle> processes) {
-        return Messages.showYesNoDialog(project, "Send SIGTERM to " + ShellProcesses.describe(processes)
-                        + "?\nThis includes Java apps not started from this tab, such as other IDEs and Gradle daemons "
-                        + "(this IDE is excluded).",
+        return Messages.showYesNoDialog(project, killJavaMessage(processes),
                 "Kill All Java Processes", "Kill", "Cancel", Messages.getWarningIcon()) == Messages.YES;
     }
 
-    /** The Kill button; {@code alsoJava} (Ctrl+click) first stops every Java process, unless that is cancelled. */
+    /** Names every process (pid and command line, up to 20) so it is clear which apps get the signal. */
+    static String killJavaMessage(List<ProcessHandle> processes) {
+        StringBuilder s = new StringBuilder("Send SIGTERM to ").append(processes.size())
+                .append(processes.size() == 1 ? " process" : " processes")
+                .append("? This includes your Java apps not started from this tab, such as other IDEs and Gradle daemons "
+                        + "(this IDE is excluded).\n");
+        processes.stream().limit(20).forEach(p -> s.append('\n').append(p.pid()).append("  ")
+                .append(StringUtil.shortenTextWithEllipsis(ShellProcesses.commandLine(p), 120, 0)));
+        if (processes.size() > 20) s.append("\n… and ").append(processes.size() - 20).append(" more");
+        return s.toString();
+    }
+
+    /**
+     * The Kill button; {@code alsoJava} (Ctrl+click) first stops every Java process, unless that is cancelled.
+     * Listing them reads every process's command line from /proc, so that happens off the EDT.
+     */
     void kill(boolean alsoJava) {
-        if (alsoJava && !killJavaProcesses()) return;
-        killShell(true);
+        if (!alsoJava) {
+            killShell(true);
+            return;
+        }
+        java.util.function.Supplier<List<ProcessHandle>> source = javaProcesses;
+        AppExecutorUtil.getAppExecutorService().execute(() -> {
+            List<ProcessHandle> processes = source.get();
+            ApplicationManager.getApplication().invokeLater(() -> {
+                if (!disposed && killJavaProcesses(processes)) killShell(true);
+            }, ModalityState.defaultModalityState());
+        });
     }
 
     /** Kills the whole session: the shell, the running command and anything left running in the background. */
@@ -954,7 +996,7 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         private final KillableProcessHandler handler;
         private final ShellOutputParser parser;
 
-        ShellListener(KillableProcessHandler handler) {
+        ShellListener(KillableProcessHandler handler, String nonce) {
             this.handler = handler;
             this.parser = new ShellOutputParser(new ShellOutputParser.Listener() {
                 @Override
@@ -971,7 +1013,7 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
                 public void completionDone(String id) {
                     ApplicationManager.getApplication().invokeLater(() -> onCompletionDone(id), ModalityState.any());
                 }
-            });
+            }, nonce);
         }
 
         @Override
@@ -1013,7 +1055,7 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
             discard(pendingCompletion);
             pendingCompletion = completion;
             writeRaw(shell, " __lc_complete " + ShellText.shellQuote(line) + " >" + ShellText.shellQuote(out.toString())
-                    + " 2>/dev/null; printf '\\036LCDONE:%s\\n' " + completion.id() + "\n");
+                    + " 2>/dev/null; printf '\\036LCDONE:" + shellNonce + ":%s\\n' " + completion.id() + "\n");
         } catch (IOException e) {
             applyCompletion(text, caret, wordStart, ShellText.fileCompletions(text.substring(wordStart, caret), cwd, HOME));
         }
@@ -1040,7 +1082,9 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
 
     private void applyCompletion(String text, int caret, int wordStart, List<String> raw) {
         if (!input.getText().equals(text) || input.getCaretPosition() != caret) return;
+        // A name with a newline (e.g. a crafted file "x\nreboot") would put a second command line into the box.
         List<String> candidates = raw.stream().map(String::strip).filter(c -> !c.isEmpty())
+                .filter(c -> c.chars().noneMatch(Character::isISOControl))
                 .distinct().sorted().limit(MAX_COMPLETIONS).toList();
         if (candidates.isEmpty()) return;
         String word = text.substring(wordStart, caret);
@@ -1244,6 +1288,7 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
 
     private void highlight(List<LogLine> shown, int offset, int docLine) {
         MarkupModel markup = editor.getMarkupModel();
+        int firstNewMatch = matchStarts.size();
         boolean markMatches = filterPattern != null && !excludeBox.isSelected();
         TextAttributes matchAttrs = markMatches
                 ? editor.getColorsScheme().getAttributes(EditorColors.TEXT_SEARCH_RESULT_ATTRIBUTES)
@@ -1277,8 +1322,6 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
                     if (m.end() > m.start()) {
                         matchStarts.add(offset + m.start());
                         matchEnds.add(offset + m.end());
-                        markup.addRangeHighlighter(offset + m.start(), offset + m.end(), HighlighterLayer.SELECTION - 1,
-                                matchAttrs, HighlighterTargetArea.EXACT_RANGE);
                     }
                 }
             }
@@ -1289,6 +1332,21 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         if (runAttrs != null && runEnd > runStart) {
             markup.addRangeHighlighter(runStart, runEnd, HighlighterLayer.SYNTAX, runAttrs, HighlighterTargetArea.EXACT_RANGE);
         }
+        if (markMatches) paintMatches(firstNewMatch, matchAttrs);
+    }
+
+    /**
+     * Paints the matches from {@code from} on, but keeps at most {@link #MAX_MATCH_HIGHLIGHTS} painted: the newest,
+     * since the view usually follows the end. A filter like "e" on a big log would otherwise add hundreds of
+     * thousands of highlighters on the EDT. Unpainted matches are still counted and selected by the match jumps.
+     */
+    private void paintMatches(int from, TextAttributes attrs) {
+        MarkupModel markup = editor.getMarkupModel();
+        for (int i = Math.max(from, matchStarts.size() - MAX_MATCH_HIGHLIGHTS); i < matchStarts.size(); i++) {
+            matchHighlighters.add(markup.addRangeHighlighter(matchStarts.getInt(i), matchEnds.getInt(i),
+                    HighlighterLayer.SELECTION - 1, attrs, HighlighterTargetArea.EXACT_RANGE));
+        }
+        while (matchHighlighters.size() > MAX_MATCH_HIGHLIGHTS) markup.removeHighlighter(matchHighlighters.pollFirst());
     }
 
     private void rebuild() {
@@ -1323,6 +1381,9 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
     }
 
     void clear() {
+        // Output that arrived before the clear but was not shown yet goes too.
+        while (pending.poll() != null) pendingCount.decrementAndGet();
+        droppedCount.set(0);
         lines.clear();
         visibleLines.clear();
         previousLevel = null;
@@ -1546,7 +1607,8 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
                 if (!bookmarkHighlighters.containsKey(line)) {
                     append("  (hidden by filter)", SimpleTextAttributes.GRAYED_ITALIC_ATTRIBUTES);
                 }
-                setToolTipText(line.text);
+                // Plain text: a log line starting with <html> must not be rendered (it could load remote images).
+                setToolTipText("<html>" + StringUtil.escapeXmlEntities(line.text) + "</html>");
             }
         });
         bookmarkList.getEmptyText().setText("No bookmarks")
@@ -1708,9 +1770,11 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         showLine(docLine);
     }
 
+    /** Forgets the matches; their highlighters are removed with all others by the caller. */
     private void clearMatches() {
         matchStarts.clear();
         matchEnds.clear();
+        matchHighlighters.clear();
         currentMatch = 0;
     }
 

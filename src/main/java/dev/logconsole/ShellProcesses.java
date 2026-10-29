@@ -56,15 +56,23 @@ final class ShellProcesses {
     }
 
     /**
-     * Like {@code pkill -f java}: every live process whose command line contains "java", but never this IDE or the
-     * processes it runs under (e.g. the Gradle daemon of {@code runIde}), since killing those would end the IDE.
+     * Like {@code pkill -f java}: every live process of this user whose command line contains "java", but never this
+     * IDE or the processes it runs under (e.g. the Gradle daemon of {@code runIde}), since killing those would end
+     * the IDE. Other users' processes are skipped: they aren't ours, and without root the signal would fail anyway.
      */
     static List<ProcessHandle> javaProcesses() {
         java.util.Set<Long> ide = new java.util.HashSet<>();
         for (ProcessHandle p = ProcessHandle.current(); p != null; p = p.parent().orElse(null)) ide.add(p.pid());
+        String user = ProcessHandle.current().info().user().orElse(null);
+        if (user == null) return List.of();
         return ProcessHandle.allProcesses()
-                .filter(p -> !ide.contains(p.pid()) && commandLine(p).contains("java"))
+                .filter(p -> !ide.contains(p.pid()) && ownedBy(p, user) && commandLine(p).contains("java"))
                 .toList();
+    }
+
+    /** False when the owner is unknown, so a process we can't inspect is never killed. */
+    static boolean ownedBy(ProcessHandle process, String user) {
+        return process.info().user().map(user::equals).orElse(false);
     }
 
     /** The full command line, as {@code pkill -f} matches it; Linux reads it from /proc so all arguments are seen. */

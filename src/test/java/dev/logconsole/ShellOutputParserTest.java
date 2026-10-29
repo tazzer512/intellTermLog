@@ -6,10 +6,13 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ShellOutputParserTest {
-    private static final String PWD = ShellOutputParser.PWD_MARKER;
-    private static final String DONE = ShellOutputParser.COMPLETION_MARKER;
+    private static final String NONCE = ShellOutputParser.newNonce();
+    private static final String PWD = ShellOutputParser.pwdMarker(NONCE);
+    private static final String DONE = ShellOutputParser.completionMarker(NONCE);
 
     /** Records parser events as strings, e.g. "line:foo", "prompt:/tmp", "done:3". */
     private final List<String> events = new ArrayList<>();
@@ -28,7 +31,7 @@ class ShellOutputParserTest {
         public void completionDone(String id) {
             events.add("done:" + id);
         }
-    });
+    }, NONCE);
 
     @Test
     void dropsOutputBeforeTheFirstPrompt() {
@@ -101,6 +104,29 @@ class ShellOutputParserTest {
         parser.finish();
         parser.finish();
         assertEquals(List.of("prompt:/a", "line:exit message"), events);
+    }
+
+    /** A program printing the marker (e.g. `cat` of a crafted log) must not make the tab think bash is idle. */
+    @Test
+    void markersWithoutThisShellsNonceAreJustOutput() {
+        parser.feed(PWD + "/a\n");
+        parser.feed(ShellOutputParser.PWD_MARKER + "/forged\n");
+        parser.feed(ShellOutputParser.pwdMarker("guessed") + "/forged\n");
+        parser.feed(ShellOutputParser.COMPLETION_MARKER + "7\n");
+        assertEquals(List.of("prompt:/a", "line:LCPWD:/forged", "line:LCPWD:guessed:/forged", "line:LCDONE:7"), events);
+    }
+
+    @Test
+    void noncesAreUnique() {
+        assertNotEquals(ShellOutputParser.newNonce(), ShellOutputParser.newNonce());
+        assertTrue(ShellOutputParser.newNonce().matches("[0-9a-f]{32}"));
+    }
+
+    @Test
+    void stripsControlCharactersButKeepsTabs() {
+        parser.feed(PWD + "/a\n");
+        parser.feed("a\u0007b\bc\u0000d\te\u007Ff\n");
+        assertEquals(List.of("prompt:/a", "line:abcd\tef"), events);
     }
 
     @Test

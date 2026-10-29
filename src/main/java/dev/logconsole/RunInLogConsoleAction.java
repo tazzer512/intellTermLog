@@ -45,7 +45,8 @@ public final class RunInLogConsoleAction extends DumbAwareAction {
     static String commandFor(String name) {
         String ext = name.lastIndexOf('.') < 0 ? "" : name.substring(name.lastIndexOf('.') + 1).toLowerCase();
         String shell = ext.equals("zsh") ? "zsh" : ext.equals("ksh") ? "ksh" : "bash";
-        return shell + " " + quote(name);
+        // "./" so a name starting with '-' is not read as an option of the shell
+        return shell + " " + quote(name.startsWith("-") ? "./" + name : name);
     }
 
     static String quote(String s) {

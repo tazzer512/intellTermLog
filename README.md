@@ -41,10 +41,11 @@ Stop/Kill find processes via `/proc` (Linux) — on Windows the shell does not s
 - **Stop** ends everything started from the tab but keeps the shell (and your `cd`/exports): the running
   command, background jobs and apps a script left running, even when it ended without `wait` or an app
   detached with `setsid` (each tab's shell gets a `LOG_CONSOLE_SESSION` variable that its processes inherit). SIGTERM first so Spring shutdown hooks run; anything alive after 10s gets SIGKILL.
+  If bash itself is waiting (e.g. in `read`), Stop sends Ctrl+C instead.
   **Kill shell** does the same and ends bash itself with SIGHUP (anything still alive after 5s gets SIGKILL), then
   opens a fresh shell.
-  Ctrl+click (⌘+click) *Kill shell* to also SIGTERM every Java process, like `pkill -f java` (after a confirmation;
-  the IDE itself and the processes it runs under are spared). Ctrl+C in the command box interrupts the running command.
+  Ctrl+click (⌘+click) *Kill shell* to also SIGTERM all your Java processes, like `pkill -f java` (only your user's) (after a confirmation
+  that lists each pid and command line; the IDE itself and the processes it runs under are spared). Ctrl+C in the command box interrupts the running command.
   Closing a tab kills too. Not reachable: processes owned by another daemon, e.g. apps run by the
   Gradle daemon (`gradle bootRun` without `--no-daemon`) or `docker run -d` / `docker compose up -d`.
 - Right-click a `.sh` file → **Run 'run-all.sh' in Log Console** (project view, editor, editor tab).

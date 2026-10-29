@@ -59,6 +59,7 @@ class SettingsAndActionTest {
         assertEquals("bash 'my script.bash'", RunInLogConsoleAction.commandFor("my script.bash"));
         assertEquals("zsh setup.zsh", RunInLogConsoleAction.commandFor("setup.zsh"));
         assertEquals("ksh OLD.KSH", RunInLogConsoleAction.commandFor("OLD.KSH"));
+        assertEquals("bash ./-x.sh", RunInLogConsoleAction.commandFor("-x.sh"), "a leading dash is not an option");
     }
 
     @Test
