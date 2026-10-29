@@ -498,7 +498,8 @@ public class LogConsolePanelTest extends BasePlatformTestCase {
     };
 
     private List<String> linkTexts() {
-        panel.waitForLinks();
+        // Internal API, so only here: in the plugin it would fail the Marketplace verifier.
+        EditorHyperlinkSupport.get(panel.editor).waitForPendingFilters(5_000);
         PlatformTestUtil.dispatchAllEventsInIdeEventQueue();
         String text = documentText();
         return EditorHyperlinkSupport.get(panel.editor).getAllHyperlinks(0, text.length()).stream()

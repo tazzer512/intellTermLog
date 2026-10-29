@@ -14,9 +14,18 @@ User-facing behavior is described in `README.md`; keep it in sync when behavior 
 ```
 
 The plugin version is computed in `build.gradle.kts`: `1.0.<git commit count>`, so each commit pushed to main is
-a new version. Don't hard-code it; bump the `1.0` prefix for bigger releases. CI checks out with `fetch-depth: 0`.
+a new version. Don't hard-code it; bump the `1.0` prefix for bigger releases. CI (`.github/workflows/build.yml`,
+ubuntu, on pushes to main and PRs) runs `./gradlew test buildPlugin` with `fetch-depth: 0` and uploads the zip.
 
-Compiler runs with `-Xlint:deprecation -Xlint:removal`; keep the build free of warnings.
+The plugin ID is `dev.avh.logconsole` (`plugin.xml`, Gradle `group`); the Java package stays `dev.logconsole`.
+Don't change the ID: installs would see it as a different plugin. Settings live in `logConsole.xml`
+(`LogConsoleSettings`), history and UI state in `PropertiesComponent` keys starting with `logConsole.`.
+
+`bup/` holds plugin zips the owner commits on purpose; leave it alone (don't delete or gitignore it).
+
+Compiler runs with `-Xlint:deprecation -Xlint:removal`; keep the build free of warnings. Don't call
+`@ApiStatus.Internal` platform API from `src/main`: the Marketplace verifier flags it (e.g.
+`EditorHyperlinkSupport.waitForPendingFilters`, which is why only the test calls it).
 
 Restarting a running sandbox IDE: find it with `pgrep -f "[i]dea-2026.1.5/jbr/bin/java"` and kill those
 pids. Do **not** use `pkill -f "idea-2026.1.5/jbr/bin/java"`: the pattern matches your own shell command
@@ -34,7 +43,8 @@ prompt marker can arrive before the 50 ms output flush, so they flush after the 
 | `LogConsolePanel` | One tab: UI, bash session lifecycle, output pipeline, filter, completion, bookmarks, history. EDT-only state unless `volatile`. |
 | `ShellOutputParser` | Splits PTY output into lines, strips ANSI, handles `\r` overwrites, recognizes the prompt/completion markers. Pure, tested. |
 | `ShellText` | Quoting/escaping, word boundaries, file completion, tab titles. Pure, tested. |
-| `ShellProcesses` | Finds processes started from a shell (tree + session + env tag via `/proc`) for Stop/Kill. Tested. |
+| `ShellProcesses` | Finds processes started from a shell (tree + session + env tag via `/proc`) for Stop/Kill, this user's Java processes for Ctrl+click Kill, and sends SIGHUP. Tested. |
+| `LogLine` / `LogLevel` | One line (text, kind output/command/system, level, `entryStart`, number, bookmark note; mutable fields EDT-only) and its level: ERROR/WARN/DEBUG/OTHER, plus COMMAND/SYSTEM, which are always shown. |
 | `LogClassifier` | Level of a line: the earliest-matching pattern wins; stack-trace continuation lines inherit. `continuesEntry` decides `LogLine.entryStart`, which the level counters and jumps use. Tested. |
 | `LogConsoleSettings` / `LogConsoleConfigurable` | App-level settings (patterns, colors, max lines), Settings \| Tools \| Log Console. |
 | `LogConsoleToolWindowFactory` | Tool window + tabs; `run(project, command)` reuses or opens a tab. |
@@ -59,7 +69,7 @@ prompt marker can arrive before the 50 ms output flush, so they flush after the 
   pty4j's `Process` does not support `toHandle()`; use `ProcessHandle.of(process.pid())`.
 - Ctrl+click on Kill also SIGTERMs `ShellProcesses.javaProcesses()` (like `pkill -f java`: this user's processes only, minus this JVM and its
   ancestors, e.g. the Gradle daemon under `runIde`), after `confirmKillJava`. Tests replace both `javaProcesses`
-  and `confirmKillJava`; never let a test confirm against the real list, it would SIGTERM every Java app on the machine.
+  and `confirmKillJava`; never let a test confirm against the real list, it would SIGTERM every Java app you run.
 - Output is queued off-EDT (`pending`, capped at `MAX_PENDING`) and flushed in 50 ms batches on the EDT.
   `visibleLines.get(i)` is document line `i`. Bookmarks reference `LogLine` objects (identity), not line numbers.
 - Level highlighters are coalesced per run of same-level lines; a filter/level change rebuilds the document.
@@ -73,6 +83,10 @@ prompt marker can arrive before the 50 ms output flush, so they flush after the 
   `DefaultConsoleFiltersProvider` gives `ExceptionFilter`), so there is no hard dependency on the Java plugin.
   `EditorHyperlinkSupport.highlightHyperlinksLater` runs them per appended batch; `rebuild()`/`clear()` bump
   `linkGeneration` so searches over the old text expire.
+- Ctrl+click is `isCtrlClick` (Ctrl or ⌘). On a level checkbox it solos that level (`toggleSoloLevel`; the item
+  listener reads `EventQueue.getCurrentEvent()` and reverts the toggle), saving the states in `levelsBeforeSolo`
+  so a second Ctrl+click restores them; any normal change or Show All Lines drops the saved states. Ctrl+double-click
+  in the editor selects the whole line (`selectLine`).
 - `samples/demo.sh` must run under bash (`$RANDOM`); it re-execs itself with bash when started via `sh`.
 
 ## Conventions

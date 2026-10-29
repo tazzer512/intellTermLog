@@ -1282,10 +1282,6 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
                 () -> disposed || generation != linkGeneration);
     }
 
-    void waitForLinks() {
-        hyperlinks.waitForPendingFilters(5_000);
-    }
-
     private void highlight(List<LogLine> shown, int offset, int docLine) {
         MarkupModel markup = editor.getMarkupModel();
         int firstNewMatch = matchStarts.size();
