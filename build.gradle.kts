@@ -5,7 +5,7 @@ plugins {
     id("org.jetbrains.intellij.platform") version "2.19.0"
 }
 
-group = "dev.logconsole"
+group = "dev.avh.logconsole"
 // Every commit gets its own version, <major.minor>.<number of commits>, so each push to main is a new release
 // without editing this file. Bump the major/minor by hand. CI needs the full history (fetch-depth: 0), or the
 // count would be 1; without git (e.g. a source zip) the patch is 0.

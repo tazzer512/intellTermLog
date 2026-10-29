@@ -1,5 +1,5 @@
 <idea-plugin>
-    <id>dev.logconsole</id>
+    <id>dev.avh.logconsole</id>
     <name>Log Console</name>
     <vendor>Arjen van Haren</vendor>
     <description><![CDATA[
