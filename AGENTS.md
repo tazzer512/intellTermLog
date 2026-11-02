@@ -21,7 +21,10 @@ The plugin ID is `dev.avh.logconsole` (`plugin.xml`, Gradle `group`); the Java p
 Don't change the ID: installs would see it as a different plugin. Settings live in `logConsole.xml`
 (`LogConsoleSettings`), history and UI state in `PropertiesComponent` keys starting with `logConsole.`.
 
-`bup/` holds plugin zips the owner commits on purpose; leave it alone (don't delete or gitignore it).
+`bup/` holds plugin zips the owner commits on purpose; leave it alone (don't delete or gitignore it). When asked to
+add one: run `./gradlew buildPlugin` on the commit to ship, copy `build/distributions/log-console-1.0.<n>.zip` with
+`n = git rev-list --count HEAD` (`build/distributions` also keeps older zips, so don't just take one of them), and
+commit it as "Add log-console-1.0.<n>.zip to bup". That commit itself makes the next version `n + 1`.
 
 Compiler runs with `-Xlint:deprecation -Xlint:removal`; keep the build free of warnings. Don't call
 `@ApiStatus.Internal` platform API from `src/main`: the Marketplace verifier flags it (e.g.
@@ -46,7 +49,7 @@ prompt marker can arrive before the 50 ms output flush, so they flush after the 
 | `ShellProcesses` | Finds processes started from a shell (tree + session + env tag via `/proc`) for Rerun/Kill, this user's Java processes for the Java button and Ctrl+click Kill, and sends SIGHUP. Tested. |
 | `LogLine` / `LogLevel` | One line (text, kind output/command/system, level, `entryStart`, app, number, bookmark note; mutable fields EDT-only) and its level: ERROR/WARN/DEBUG/OTHER, plus COMMAND/SYSTEM, which are always shown. |
 | `LogClassifier` | Level of a line: the earliest-matching pattern wins; stack-trace continuation lines inherit. `continuesEntry` decides `LogLine.entryStart`, which the level counters and jumps use; `app` finds the app name for the App dropdown. Tested. |
-| `LogConsoleSettings` / `LogConsoleConfigurable` | App-level settings (patterns, colors, max lines), Settings \| Tools \| Log Console. |
+| `LogConsoleSettings` / `LogConsoleConfigurable` | App-level settings (level/continuation/app patterns, colors, max lines), Settings \| Tools \| Log Console. |
 | `LogConsoleToolWindowFactory` | Tool window + tabs; `run(project, command)` reuses or opens a tab. |
 | `RunInLogConsoleAction` | "Run 'x.sh' in Log Console" on script files. |
 | `resources/dev/logconsole/complete.bash` | `__lc_complete` bash function used by Tab completion. Tested via `CompleteBashTest`. |
@@ -94,9 +97,11 @@ prompt marker can arrive before the 50 ms output flush, so they flush after the 
   `linkGeneration` so searches over the old text expire.
 - Ctrl+click is `isCtrlClick` (Ctrl or ⌘). On a level checkbox it solos that level (`toggleSoloLevel`; the item
   listener reads `EventQueue.getCurrentEvent()` and reverts the toggle), saving the states in `levelsBeforeSolo`
-  so a second Ctrl+click restores them; any normal change or Show All Lines drops the saved states. Ctrl+double-click
+  so a second Ctrl+click restores them; any normal change or Show All Lines drops the saved states. Show All Lines
+  (`showAllLines`, e.g. double-clicking a hidden bookmark) also sets the App dropdown back to ALL. Ctrl+double-click
   in the editor selects the whole line (`selectLine`).
-- `samples/demo.sh` must run under bash (`$RANDOM`); it re-execs itself with bash when started via `sh`.
+- `samples/demo.sh` must run under bash (`$RANDOM`); it re-execs itself with bash when started via `sh`. Its lines
+  (`<time> LEVEL [stub-server|order-app] ...`) are what the default app pattern expects, so it fills the App dropdown.
 
 ## Conventions
 
