@@ -9,6 +9,8 @@ final class LogLine {
     LogLevel level;
     /** False for a stack trace line and the like, which belongs to the entry above it; set with the level. */
     boolean entryStart = true;
+    /** The app the line comes from (see {@link LogClassifier#app}), or null; set with the level. */
+    String app;
     /** 1-based position in the tab's output since it was opened; assigned on the EDT. */
     int number;
     /** Non-null when bookmarked: the bookmark's note, possibly empty. EDT-only. */

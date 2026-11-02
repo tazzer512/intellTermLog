@@ -17,6 +17,7 @@ class SettingsAndActionTest {
         assertEquals(LogClassifier.DEFAULT_DEBUG, s.debugPattern);
         assertEquals(LogClassifier.DEFAULT_OTHER, s.otherPattern);
         assertEquals(LogClassifier.DEFAULT_CONTINUATION, s.continuationPattern);
+        assertEquals(LogClassifier.DEFAULT_APP, s.appPattern);
         assertEquals(100_000, s.maxLines);
         assertNull(s.errorColor);
         assertNull(s.debugColor);

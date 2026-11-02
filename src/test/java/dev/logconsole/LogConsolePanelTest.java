@@ -471,6 +471,65 @@ public class LogConsolePanelTest extends BasePlatformTestCase {
         assertEquals("ERROR the second line", selected());
     }
 
+    private List<String> appItems() {
+        List<String> items = new ArrayList<>();
+        for (int i = 0; i < panel.appBox.getItemCount(); i++) items.add(panel.appBox.getItemAt(i));
+        return items;
+    }
+
+    public void testAppDropdown() {
+        assertEquals(List.of(LogConsolePanel.ALL_APPS), appItems());
+        output("10:00:00 INFO  [stub-server] c.e.App - up",
+                "10:00:01 ERROR [order-app] c.e.OrderService - Failed",
+                "java.lang.IllegalStateException: locked",
+                "\tat com.example.OrderService.process(OrderService.java:42)",
+                "10:00:02 WARN  [stub-server] c.e.Client - slow",
+                "no app here");
+        assertEquals(List.of(LogConsolePanel.ALL_APPS, "order-app", "stub-server"), appItems());
+        assertEquals(0, panel.appBox.getSelectedIndex());
+        assertEquals(6, shownOutput().size());
+
+        panel.appBox.setSelectedItem("order-app");
+        // the exception and its stack trace belong to the order-app error above them
+        assertEquals(List.of("10:00:01 ERROR [order-app] c.e.OrderService - Failed",
+                "java.lang.IllegalStateException: locked",
+                "\tat com.example.OrderService.process(OrderService.java:42)"), shownOutput());
+        panel.enqueue(new LogLine("$ sh run-all.sh", LogLine.Kind.COMMAND));
+        output("10:00:03 INFO  [order-app] c.e.App - later", "10:00:04 INFO  [stub-server] c.e.App - hidden");
+        assertTrue(documentText().contains("$ sh run-all.sh")); // commands stay visible
+        assertEquals("10:00:03 INFO  [order-app] c.e.App - later", shownOutput().get(shownOutput().size() - 1));
+
+        // a new app shows up in sorted order without changing the choice
+        output("10:00:05 INFO  [billing] c.e.App - up");
+        assertEquals(List.of(LogConsolePanel.ALL_APPS, "billing", "order-app", "stub-server"), appItems());
+        assertEquals("order-app", panel.appBox.getSelectedItem());
+
+        // Ctrl+L keeps the apps and the choice
+        panel.clear();
+        output("10:00:06 INFO  [stub-server] c.e.App - again", "10:00:07 INFO  [order-app] c.e.App - again");
+        assertEquals(List.of("10:00:07 INFO  [order-app] c.e.App - again"), shownOutput());
+
+        panel.appBox.setSelectedIndex(0);
+        assertEquals(2, shownOutput().size());
+    }
+
+    public void testAppPatternChangeRelistsApps() {
+        output("10:00:00 INFO  [stub-server] up", "[web] 10:00:01 INFO up");
+        panel.appBox.setSelectedItem("web");
+        LogConsoleSettings settings = LogConsoleSettings.getInstance();
+        LogConsoleSettings.State saved = settings.getState();
+        try {
+            LogConsoleSettings.State custom = new LogConsoleSettings.State();
+            custom.appPattern = "\\[(stub)-";
+            settings.update(custom);
+            assertEquals(List.of(LogConsolePanel.ALL_APPS, "stub"), appItems());
+            assertEquals(0, panel.appBox.getSelectedIndex()); // "web" is gone, so ALL again
+            assertEquals(2, shownOutput().size());
+        } finally {
+            settings.update(saved);
+        }
+    }
+
     public void testLevelColors() {
         output("10:00:00 INFO start", "10:00:01 DEBUG details", "10:00:02 ERROR bad", "10:00:03 WARN hmm");
         LogConsoleSettings settings = LogConsoleSettings.getInstance();

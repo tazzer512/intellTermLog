@@ -27,6 +27,7 @@ public final class LogConsoleConfigurable implements Configurable {
     private final JBTextField debugField = new JBTextField();
     private final JBTextField otherField = new JBTextField();
     private final JBTextField continuationField = new JBTextField();
+    private final JBTextField appField = new JBTextField();
     private final JBCheckBox inheritBox =
             new JBCheckBox("Lines without a level keep the level of the previous line (multi-line log entries)");
     private final ColorPanel errorColor = new ColorPanel();
@@ -60,6 +61,9 @@ public final class LogConsoleConfigurable implements Configurable {
                 .addLabeledComponent("Continuation pattern:", continuationField)
                 .addTooltip("Lines matching this (stack trace frames, 'Caused by:') keep the color of the line above.")
                 .addComponent(inheritBox)
+                .addLabeledComponent("App pattern:", appField)
+                .addTooltip("Finds the app a line comes from, for the App dropdown: the first group that matched "
+                        + "(or the whole match). Stack traces belong to the app of the line above.")
                 .addSeparator()
                 .addLabeledComponent("Error color:", errorColor)
                 .addLabeledComponent("Warning color:", warnColor)
@@ -86,6 +90,7 @@ public final class LogConsoleConfigurable implements Configurable {
         validate("Debug pattern", s.debugPattern);
         validate("Other levels pattern", s.otherPattern);
         validate("Continuation pattern", s.continuationPattern);
+        validate("App pattern", s.appPattern);
         LogConsoleSettings.getInstance().update(s);
     }
 
@@ -101,6 +106,7 @@ public final class LogConsoleConfigurable implements Configurable {
         otherField.setText(s.otherPattern);
         continuationField.setText(s.continuationPattern);
         inheritBox.setSelected(s.inheritUntagged);
+        appField.setText(s.appPattern);
         errorColor.setSelectedColor(LogConsoleSettings.parseColor(s.errorColor, LogConsoleSettings.DEFAULT_ERROR_COLOR));
         warnColor.setSelectedColor(LogConsoleSettings.parseColor(s.warnColor, LogConsoleSettings.DEFAULT_WARN_COLOR));
         debugColor.setSelectedColor(LogConsoleSettings.parseColor(s.debugColor, LogConsoleSettings.DEFAULT_DEBUG_COLOR));
@@ -119,6 +125,7 @@ public final class LogConsoleConfigurable implements Configurable {
         s.otherPattern = otherField.getText();
         s.continuationPattern = continuationField.getText();
         s.inheritUntagged = inheritBox.isSelected();
+        s.appPattern = appField.getText();
         s.errorColor = toHex(errorColor.getSelectedColor(), LogConsoleSettings.DEFAULT_ERROR_COLOR);
         s.warnColor = toHex(warnColor.getSelectedColor(), LogConsoleSettings.DEFAULT_WARN_COLOR);
         s.debugColor = toHex(debugColor.getSelectedColor(), LogConsoleSettings.DEFAULT_DEBUG_COLOR);

@@ -34,6 +34,8 @@ public final class LogConsoleSettings implements PersistentStateComponent<LogCon
         public String otherPattern = LogClassifier.DEFAULT_OTHER;
         public String continuationPattern = LogClassifier.DEFAULT_CONTINUATION;
         public boolean inheritUntagged = false;
+        /** Finds the app a line comes from (first matching group), for the app dropdown; blank: no app dropdown entries. */
+        public String appPattern = LogClassifier.DEFAULT_APP;
         public int maxLines = 100_000;
         /** Hex color, or null for the theme-aware default. */
         public String errorColor;
@@ -51,6 +53,7 @@ public final class LogConsoleSettings implements PersistentStateComponent<LogCon
                     && Objects.equals(otherPattern, s.otherPattern)
                     && Objects.equals(continuationPattern, s.continuationPattern)
                     && inheritUntagged == s.inheritUntagged
+                    && Objects.equals(appPattern, s.appPattern)
                     && maxLines == s.maxLines
                     && Objects.equals(errorColor, s.errorColor)
                     && Objects.equals(warnColor, s.warnColor)
@@ -61,7 +64,7 @@ public final class LogConsoleSettings implements PersistentStateComponent<LogCon
         @Override
         public int hashCode() {
             return Objects.hash(errorPattern, warnPattern, debugPattern, otherPattern, continuationPattern,
-                    inheritUntagged, maxLines, errorColor, warnColor, debugColor, otherColor);
+                    inheritUntagged, appPattern, maxLines, errorColor, warnColor, debugColor, otherColor);
         }
     }
 

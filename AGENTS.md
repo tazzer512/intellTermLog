@@ -40,12 +40,12 @@ prompt marker can arrive before the 50 ms output flush, so they flush after the 
 
 | File | Role |
 |------|------|
-| `LogConsolePanel` | One tab: UI, bash session lifecycle, output pipeline, filter, completion, bookmarks, history. EDT-only state unless `volatile`. |
+| `LogConsolePanel` | One tab: UI, bash session lifecycle, output pipeline, filter, completion, bookmarks, history; also holds the nested `JavaProcessesDialog`. EDT-only state unless `volatile`. |
 | `ShellOutputParser` | Splits PTY output into lines, strips ANSI, handles `\r` overwrites, recognizes the prompt/completion markers. Pure, tested. |
 | `ShellText` | Quoting/escaping, word boundaries, file completion, tab titles. Pure, tested. |
 | `ShellProcesses` | Finds processes started from a shell (tree + session + env tag via `/proc`) for Rerun/Kill, this user's Java processes for the Java button and Ctrl+click Kill, and sends SIGHUP. Tested. |
-| `LogLine` / `LogLevel` | One line (text, kind output/command/system, level, `entryStart`, number, bookmark note; mutable fields EDT-only) and its level: ERROR/WARN/DEBUG/OTHER, plus COMMAND/SYSTEM, which are always shown. |
-| `LogClassifier` | Level of a line: the earliest-matching pattern wins; stack-trace continuation lines inherit. `continuesEntry` decides `LogLine.entryStart`, which the level counters and jumps use. Tested. |
+| `LogLine` / `LogLevel` | One line (text, kind output/command/system, level, `entryStart`, app, number, bookmark note; mutable fields EDT-only) and its level: ERROR/WARN/DEBUG/OTHER, plus COMMAND/SYSTEM, which are always shown. |
+| `LogClassifier` | Level of a line: the earliest-matching pattern wins; stack-trace continuation lines inherit. `continuesEntry` decides `LogLine.entryStart`, which the level counters and jumps use; `app` finds the app name for the App dropdown. Tested. |
 | `LogConsoleSettings` / `LogConsoleConfigurable` | App-level settings (patterns, colors, max lines), Settings \| Tools \| Log Console. |
 | `LogConsoleToolWindowFactory` | Tool window + tabs; `run(project, command)` reuses or opens a tab. |
 | `RunInLogConsoleAction` | "Run 'x.sh' in Log Console" on script files. |
@@ -76,6 +76,11 @@ prompt marker can arrive before the 50 ms output flush, so they flush after the 
   default button so Enter never kills. Tests set `javaProcesses` for these too.
 - Output is queued off-EDT (`pending`, capped at `MAX_PENDING`) and flushed in 50 ms batches on the EDT.
   `visibleLines.get(i)` is document line `i`. Bookmarks reference `LogLine` objects (identity), not line numbers.
+- The App dropdown (`appBox`, `appFilter`) filters on `LogLine.app`, which `classify` sets from
+  `LogClassifier.app` (the settings' `appPattern`: first group that matched, else the whole match). The PTY merges
+  all output, so the app can only come from the text. Entry continuations (`!entryStart`) without an app of their own
+  inherit `previousApp`. Index 0 is ALL (`ALL_APPS`); apps are added sorted as they appear (at most `MAX_APPS`),
+  survive `clear()`, and are relisted by `refreshApps` when the settings change. COMMAND/SYSTEM lines are always shown.
 - Level highlighters are coalesced per run of same-level lines; a filter/level change rebuilds the document.
 - `scrollToEnd` = follow new output (the Pause Scrolling toggle is its inverse). Jumps and Scroll to the Top
   clear it. The caret normally sits on the empty line after the output, so jumps treat that line specially.

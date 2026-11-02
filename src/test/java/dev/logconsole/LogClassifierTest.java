@@ -6,6 +6,7 @@ import org.junit.jupiter.params.provider.CsvSource;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class LogClassifierTest {
@@ -68,6 +69,32 @@ class LogClassifierTest {
         assertEquals(LogLevel.ERROR, inheriting.classify("  continuation of a message", LogLevel.ERROR));
         assertEquals(LogLevel.OTHER, inheriting.classify("  continuation of a message", null));
         assertEquals(LogLevel.OTHER, inheriting.classify("12:00 INFO tagged", LogLevel.ERROR));
+    }
+
+    @Test
+    void appNames() {
+        assertEquals("order-app", classifier.app("12:00:01.123 ERROR [order-app] c.e.OrderService - Failed"));
+        assertEquals("stub-server", classifier.app("12:00:01.123 WARN  [stub-server] c.e.Client - Slow"));
+        assertEquals("stub", classifier.app("[stub] 12:00 INFO started"));
+        // Spring Boot 3.2+: the app name, then the padded thread name
+        assertEquals("order-app", classifier.app(
+                "2026-11-02T10:00:00.000+01:00  INFO 12345 --- [order-app] [           main] c.e.App : Started"));
+        // Spring Boot without an app name: the thread is not an app
+        assertNull(classifier.app("2026-11-02T10:00:00.000+01:00  INFO 12345 --- [nio-8080-exec-1] c.e.App : hi"));
+        assertNull(classifier.app("10:00:00.000 [main] INFO c.e.App - thread before the level"));
+        assertNull(classifier.app("\tat com.example.Foo.bar(Foo.java:12)"));
+        assertNull(classifier.app("plain output"));
+    }
+
+    @Test
+    void customAndBlankAppPatterns() {
+        LogClassifier noGroups = new LogClassifier(LogClassifier.DEFAULT_ERROR, LogClassifier.DEFAULT_WARN,
+                LogClassifier.DEFAULT_DEBUG, LogClassifier.DEFAULT_OTHER, LogClassifier.DEFAULT_CONTINUATION, false,
+                "^\\w+-\\d+(?=\\s+\\|)");
+        assertEquals("web-1", noGroups.app("web-1  | listening")); // docker compose style, whole match
+        LogClassifier none = new LogClassifier(LogClassifier.DEFAULT_ERROR, LogClassifier.DEFAULT_WARN,
+                LogClassifier.DEFAULT_DEBUG, LogClassifier.DEFAULT_OTHER, LogClassifier.DEFAULT_CONTINUATION, false, "");
+        assertNull(none.app("[stub] 12:00 INFO started"));
     }
 
     @Test

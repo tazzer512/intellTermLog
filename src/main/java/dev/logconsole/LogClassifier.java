@@ -17,6 +17,16 @@ final class LogClassifier {
     static final String DEFAULT_CONTINUATION =
             "^\\s+at |^\\s*\\.\\.\\. \\d+ (more|common frames omitted)|^Caused by: |^\\s+Suppressed: |^\\s*Wrapped by: ";
 
+    /**
+     * The app a line comes from, for the app dropdown: a {@code [name]} prefix at the start of the line (e.g. added
+     * with {@code sed 's/^/[stub] /'}), a {@code [name]} right after the level ({@code INFO  [order-app] ...}), or
+     * Spring Boot's {@code INFO 1234 --- [order-app] [main] ...}. In that last format the app name is the first of two
+     * bracketed fields; a single one is the thread name, which is not an app.
+     */
+    static final String DEFAULT_APP = "^\\[([\\w.-]+)\\]"
+            + "|\\b(?:FATAL|ERROR|WARN|WARNING|INFO|DEBUG|TRACE)\\s+"
+            + "(?:\\d+\\s+---\\s+\\[([\\w.-]+)\\]\\s*\\[|\\[([\\w.-]+)\\])";
+
     /** An exception's first line, as printed by a logger right below the ERROR line that logged it. */
     private static final Pattern EXCEPTION_HEADER = Pattern.compile("^[\\w$.]*(Exception|Error)(:|$)");
 
@@ -26,20 +36,27 @@ final class LogClassifier {
     private final Pattern other;
     private final Pattern continuation;
     private final boolean inheritUntagged;
+    private final Pattern app;
 
     LogClassifier(String error, String warn, String debug, String other, String continuation, boolean inheritUntagged) {
+        this(error, warn, debug, other, continuation, inheritUntagged, DEFAULT_APP);
+    }
+
+    LogClassifier(String error, String warn, String debug, String other, String continuation, boolean inheritUntagged,
+                  String app) {
         this.error = compile(error, DEFAULT_ERROR);
         this.warn = compile(warn, DEFAULT_WARN);
         this.debug = compile(debug, DEFAULT_DEBUG);
         this.other = compile(other, DEFAULT_OTHER);
         this.continuation = compile(continuation, DEFAULT_CONTINUATION);
         this.inheritUntagged = inheritUntagged;
+        this.app = compile(app, DEFAULT_APP);
     }
 
     static LogClassifier fromSettings() {
         LogConsoleSettings.State s = LogConsoleSettings.getInstance().getState();
         return new LogClassifier(s.errorPattern, s.warnPattern, s.debugPattern, s.otherPattern, s.continuationPattern,
-                s.inheritUntagged);
+                s.inheritUntagged, s.appPattern);
     }
 
     /**
@@ -90,6 +107,20 @@ final class LogClassifier {
         if (previous == LogLevel.ERROR && EXCEPTION_HEADER.matcher(text).find()) return true;
         return inheritUntagged && start(error, text) < 0 && start(warn, text) < 0 && start(debug, text) < 0
                 && start(other, text) < 0;
+    }
+
+    /**
+     * The app named in a line: the first group of the app pattern that matched (the whole match when the pattern has
+     * no groups), or null when the line names no app.
+     */
+    String app(String text) {
+        if (app == null) return null;
+        Matcher m = app.matcher(text);
+        if (!m.find()) return null;
+        String name = null;
+        for (int g = 1; g <= m.groupCount() && name == null; g++) name = m.group(g);
+        if (m.groupCount() == 0) name = m.group();
+        return name == null || name.isBlank() ? null : name.strip();
     }
 
     private static int start(Pattern p, String text) {

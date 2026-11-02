@@ -23,6 +23,12 @@ Rerun/Kill and the Java button find processes via `/proc` (Linux) — on Windows
   (and an exception printed right below its ERROR line) belongs to its entry, and back-to-back errors are
   separate entries. A jump pauses scrolling. Keyboard: F2 / Shift+F2 for next/previous error (your keymap's
   *Next/Previous Highlighted Error*) while the focus is in the tab.
+- **App** dropdown next to the filter: *ALL* (the default) or one app, when a script starts several. All apps
+  write to the same terminal, so the app is read from each line: `INFO  [order-app] …` (a `[name]` right after
+  the level), Spring Boot's `INFO 1234 --- [order-app] [main] …` (needs `spring.application.name`), or a
+  `[stub] ` prefix at the start of the line. Apps appear in the list as they show up in the output. Stack traces
+  belong to the app of the line above, and commands and Log Console messages always stay visible. Lines that name
+  no app are shown only under *ALL*. The pattern is configurable under *App pattern* in the settings.
 - Next to the filter field: the line counter (*Lines: 1,234*, or *Lines: 120 of 1,234* while filtering) and,
   for an include filter, the match counter (*3/17*) with ▲/▼ to step through the matches like the IDE's
   Find bar. Enter / Shift+Enter in the filter field go to the next / previous match; F3 / Shift+F3 anywhere in the tab.
@@ -52,7 +58,7 @@ Rerun/Kill and the Java button find processes via `/proc` (Linux) — on Windows
   Closing a tab kills too. Not reachable: processes owned by another daemon, e.g. apps run by the
   Gradle daemon (`gradle bootRun` without `--no-daemon`) or `docker run -d` / `docker compose up -d`.
 - Right-click a `.sh` file → **Run 'run-all.sh' in Log Console** (project view, editor, editor tab).
-- Settings | Tools | Log Console (or ⚙ in the toolbar): level regexes, a color per level (error, warning,
+- Settings | Tools | Log Console (or ⚙ in the toolbar): level regexes, the app pattern, a color per level (error, warning,
   debug, and optionally other), max lines per tab.
 
 ## Build & install
@@ -73,6 +79,6 @@ Run the tests with `./gradlew test`.
 ## Tips for your scripts
 
 - End `run-all.sh` with `wait`, so the tab shows it as running until all apps have exited.
-- Prefix lines per app if you want to filter by app, e.g. `java -jar stub.jar 2>&1 | sed 's/^/[stub] /' &`,
-  then filter on `[stub]`.
+- If an app's log lines don't name it, prefix them so the App dropdown finds it:
+  `java -jar stub.jar 2>&1 | sed 's/^/[stub] /' &`.
 - ANSI color codes in the output are stripped; the plugin applies its own colors.

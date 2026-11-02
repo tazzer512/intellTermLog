@@ -62,6 +62,7 @@ import com.intellij.openapi.ui.popup.JBPopup;
 import com.intellij.openapi.ui.popup.JBPopupFactory;
 import com.intellij.openapi.util.io.FileUtil;
 import com.intellij.openapi.ide.CopyPasteManager;
+import com.intellij.openapi.ui.ComboBox;
 import com.intellij.openapi.ui.DialogWrapper;
 import com.intellij.openapi.ui.Messages;
 import com.intellij.openapi.ui.SimpleToolWindowPanel;
@@ -165,6 +166,9 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
     private static final int MAX_PENDING = 200_000;
     /** Filter matches painted at most; more are still counted and stepped through (each highlighter costs the EDT). */
     static final int MAX_MATCH_HIGHLIGHTS = 10_000;
+    /** Apps listed in the App dropdown at most, in case the app pattern matches something that varies per line. */
+    static final int MAX_APPS = 100;
+    static final String ALL_APPS = "ALL";
     private static volatile Path completionScript;
     private static final String HOME = System.getProperty("user.home");
     private static final String HISTORY_KEY = "logConsole.history";
@@ -185,6 +189,12 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
     final JBCheckBox warnBox = new JBCheckBox("Warnings", true);
     final JBCheckBox debugBox = new JBCheckBox("Debug", true);
     final JBCheckBox otherBox = new JBCheckBox("Other", true);
+    /** ALL, then the apps seen in the output (see {@link LogClassifier#app}), sorted. */
+    final ComboBox<String> appBox = new ComboBox<>(new String[]{ALL_APPS});
+    /** The apps in {@link #appBox} after ALL. */
+    private final java.util.Set<String> knownApps = new java.util.HashSet<>();
+    /** The app whose lines are shown; null for all apps. */
+    private String appFilter;
     final JBLabel statusLabel = new JBLabel();
     final JBLabel matchLabel = new JBLabel();
     final JBLabel lineCountLabel = new JBLabel();
@@ -205,6 +215,8 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
     /** Lines currently in the document; index == document line number. */
     final List<LogLine> visibleLines = new ArrayList<>();
     private LogLevel previousLevel;
+    /** App of the previous output line; stack traces and other entry continuations belong to it. */
+    private String previousApp;
     private LogClassifier classifier = LogClassifier.fromSettings();
     private TextAttributes errorAttrs;
     private TextAttributes warnAttrs;
@@ -357,6 +369,13 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
                 updateStatus();
             });
         }
+        appBox.addItemListener(e -> {
+            if (e.getStateChange() != java.awt.event.ItemEvent.SELECTED || bulkFilterChange) return;
+            selectApp();
+        });
+        appBox.setToolTipText("<html>Show only the lines of one app (commands and Log Console messages stay visible).<br>"
+                + "Apps are found in the output, e.g. <code>INFO [order-app] ...</code> or a <code>[stub] </code> prefix;"
+                + " the pattern is in Settings | Tools | Log Console.<br>Stack traces belong to the app of the line above.");
         regexBox.setToolTipText("Interpret the filter as a Java regular expression");
         String solo = "<br>Ctrl+click: show only this level; Ctrl+click again to restore the previous levels";
         errorBox.setToolTipText("<html>Error lines and their stack traces" + solo);
@@ -440,6 +459,9 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         for (JComponent c : List.of(regexBox, caseBox, excludeBox, new JBLabel("|"))) {
             options.add(c);
         }
+        options.add(new JBLabel("App:"));
+        options.add(appBox);
+        options.add(new JBLabel("|"));
         options.add(withNavigation(errorBox, LogLevel.ERROR, "Error", () -> errorCount,
                 "GotoPreviousError", "GotoNextError"));
         options.add(withNavigation(warnBox, LogLevel.WARN, "Warning", () -> warnCount, null, null));
@@ -701,8 +723,10 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         classifier = LogClassifier.fromSettings();
         refreshAttributes();
         previousLevel = null;
+        previousApp = null;
         navLevel = null;
         lines.forEach(this::classify);
+        refreshApps();
         trimToMaxLines();
         recount();
         rebuild();
@@ -1305,6 +1329,7 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
             line.number = ++lineCounter;
             classify(line);
             count(line, 1);
+            addApp(line.app);
         }
         if (batch.isEmpty()) return;
         lines.addAll(batch);
@@ -1320,7 +1345,47 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         if (line.kind != LogLine.Kind.OUTPUT) return;
         line.level = classifier.classify(line.text, previousLevel);
         line.entryStart = !classifier.continuesEntry(line.text, previousLevel);
+        String app = classifier.app(line.text);
+        line.app = app != null || line.entryStart ? app : previousApp;
         previousLevel = line.level;
+        previousApp = line.app;
+    }
+
+    /** Lists a newly seen app in the App dropdown, sorted after ALL. */
+    private void addApp(String app) {
+        if (app == null || knownApps.contains(app) || knownApps.size() >= MAX_APPS) return;
+        knownApps.add(app);
+        int i = 1;
+        while (i < appBox.getItemCount() && String.CASE_INSENSITIVE_ORDER.compare(appBox.getItemAt(i), app) < 0) i++;
+        bulkFilterChange = true;
+        try {
+            appBox.insertItemAt(app, i);
+        } finally {
+            bulkFilterChange = false;
+        }
+    }
+
+    /** Relists the apps after the app pattern changed; the selected app stays if it is still found, else ALL. */
+    private void refreshApps() {
+        String selected = appFilter;
+        bulkFilterChange = true;
+        try {
+            knownApps.clear();
+            while (appBox.getItemCount() > 1) appBox.removeItemAt(1);
+            for (LogLine line : lines) addApp(line.app);
+            appFilter = selected != null && knownApps.contains(selected) ? selected : null;
+            if (appFilter == null) appBox.setSelectedIndex(0);
+            else appBox.setSelectedItem(appFilter);
+        } finally {
+            bulkFilterChange = false;
+        }
+    }
+
+    /** Applies the App dropdown's choice. */
+    void selectApp() {
+        appFilter = appBox.getSelectedIndex() <= 0 ? null : (String) appBox.getSelectedItem();
+        rebuild();
+        updateStatus();
     }
 
     /** Errors/warnings/debug are counted per entry (a stack trace is part of its error), like the jumps stop. */
@@ -1355,6 +1420,7 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
     }
 
     private boolean isVisible(LogLine line) {
+        if (appFilter != null && line.kind == LogLine.Kind.OUTPUT && !appFilter.equals(line.app)) return false;
         boolean levelShown = switch (line.level) {
             case SYSTEM, COMMAND -> true;
             case ERROR -> errorBox.isSelected();
@@ -1498,6 +1564,7 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         lines.clear();
         visibleLines.clear();
         previousLevel = null;
+        previousApp = null; // the app list and choice stay: a rerun usually starts the same apps
         errorCount = 0;
         warnCount = 0;
         debugCount = 0;
@@ -2004,11 +2071,13 @@ public final class LogConsolePanel extends SimpleToolWindowPanel implements Disp
         updateStatus();
     }
 
-    /** Clears the text filter and shows all levels, rebuilding the output once. */
+    /** Clears the text filter and shows all levels and apps, rebuilding the output once. */
     private void showAllLines() {
         levelsBeforeSolo = null;
         bulkFilterChange = true;
         try {
+            appBox.setSelectedIndex(0);
+            appFilter = null;
             filterField.setText("");
             for (JBCheckBox box : List.of(errorBox, warnBox, debugBox, otherBox)) box.setSelected(true);
         } finally {
